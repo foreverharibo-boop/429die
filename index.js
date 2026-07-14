@@ -8,7 +8,6 @@ const CONFIG = {
     retryDelay: 3000,        // ms
     backoffMultiplier: 1.5,  // 재시도마다 딜레이 증가
     maxDelay: 20000,         // 백오프 상한선
-    maxRetries: 0,           // 0 = 무제한
     patterns: [
         "resource exhausted",
         "error-code-429",
@@ -35,10 +34,13 @@ function log(...args) {
 
 function loadSettings() {
     if (!extension_settings[EXT_ID]) {
-        extension_settings[EXT_ID] = { enabled: true };
+        extension_settings[EXT_ID] = { enabled: true, maxRetries: 20 };
     }
     if (extension_settings[EXT_ID].enabled === undefined) {
         extension_settings[EXT_ID].enabled = true;
+    }
+    if (extension_settings[EXT_ID].maxRetries === undefined) {
+        extension_settings[EXT_ID].maxRetries = 20;
     }
     return extension_settings[EXT_ID];
 }
@@ -73,7 +75,7 @@ function updateIndicator() {
         $ind.remove();
         return;
     }
-    const maxText = CONFIG.maxRetries > 0 ? `/${CONFIG.maxRetries}` : "";
+    const maxText = settings.maxRetries > 0 ? `/${settings.maxRetries}` : "";
     const text = `🔄 재시도 중... (${retryState.count}${maxText})  ✕`;
     if ($ind.length === 0) {
         $ind = $(`<div id="die429_indicator"></div>`);
@@ -87,7 +89,8 @@ function updateIndicator() {
 function scheduleRetry() {
     if (!settings.enabled) return;
 
-    if (CONFIG.maxRetries > 0 && retryState.count >= CONFIG.maxRetries) {
+    if (settings.maxRetries > 0 && retryState.count >= settings.maxRetries) {
+        toastr.warning(`최대 재시도 횟수(${settings.maxRetries}회)에 도달했습니다.`, "429die");
         resetRetryState();
         return;
     }
@@ -181,6 +184,9 @@ function addSettingsUI() {
                     <input id="die429_enabled" type="checkbox" ${settings.enabled ? "checked" : ""}>
                     <span>활성화</span>
                 </label>
+                <label>최대 시도 횟수 (0 = 무제한)
+                    <input id="die429_max" type="number" min="0" value="${settings.maxRetries}" class="text_pole">
+                </label>
             </div>
         </div>
     </div>`;
@@ -190,6 +196,10 @@ function addSettingsUI() {
     $("#die429_enabled").on("change", function () {
         settings.enabled = $(this).is(":checked");
         if (!settings.enabled) stopRetrying("비활성화됨");
+        saveSettingsDebounced();
+    });
+    $("#die429_max").on("input", function () {
+        settings.maxRetries = Number($(this).val()) || 0;
         saveSettingsDebounced();
     });
 }
