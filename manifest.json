@@ -1,0 +1,12 @@
+{
+    "display_name": "429die",
+    "loading_order": 100,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "user",
+    "version": "1.0.0",
+    "homePage": "",
+    "auto_update": false
+}
