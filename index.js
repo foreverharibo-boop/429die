@@ -22,6 +22,7 @@ const CONFIG = {
 };
 
 let settings;
+let lastGenerationType = "normal";
 let retryState = {
     active: false,
     count: 0,
@@ -58,39 +59,20 @@ function resetRetryState() {
         clearTimeout(retryState.timer);
         retryState.timer = null;
     }
-    updateIndicator();
 }
 
 function stopRetrying(reason) {
     if (retryState.active) {
         log("중단:", reason);
-        toastr.info(`자동 재시도를 중단했습니다. (${reason})`, "429die");
     }
     resetRetryState();
-}
-
-function updateIndicator() {
-    let $ind = $("#die429_indicator");
-    if (!retryState.active) {
-        $ind.remove();
-        return;
-    }
-    const maxText = settings.maxRetries > 0 ? `/${settings.maxRetries}` : "";
-    const text = `🔄 재시도 중... (${retryState.count}${maxText})  ✕`;
-    if ($ind.length === 0) {
-        $ind = $(`<div id="die429_indicator"></div>`);
-        $ind.on("click", () => stopRetrying("사용자가 클릭하여 중단함"));
-        // MovingUI가 body에 transform을 걸면 position:fixed가 깨지므로 html에 붙인다
-        $("html").append($ind);
-    }
-    $ind.text(text);
 }
 
 function scheduleRetry() {
     if (!settings.enabled) return;
 
     if (settings.maxRetries > 0 && retryState.count >= settings.maxRetries) {
-        toastr.warning(`최대 재시도 횟수(${settings.maxRetries}회)에 도달했습니다.`, "429die");
+        log(`최대 재시도 횟수(${settings.maxRetries}회) 도달`);
         resetRetryState();
         return;
     }
@@ -106,10 +88,30 @@ function scheduleRetry() {
         );
     }
 
-    updateIndicator();
     log(`재시도 #${retryState.count} 예약됨, ${delay}ms 후 실행`);
 
-    retryState.timer = setTimeout(() => clickSendButton(), delay);
+    retryState.timer = setTimeout(() => retryLastAction(), delay);
+}
+
+function retryLastAction() {
+    if (!retryState.active) return;
+
+    if (lastGenerationType === "swipe") {
+        clickSwipeButton();
+    } else {
+        clickSendButton();
+    }
+}
+
+function clickSwipeButton() {
+    const $swipeBtn = $("#chat").find(".mes").last().find(".swipe_right");
+    if ($swipeBtn.length === 0) {
+        log("스와이프 버튼을 찾을 수 없음, 전송 버튼으로 대체");
+        clickSendButton();
+        return;
+    }
+    log("스와이프 버튼 클릭, 시도 #", retryState.count);
+    $swipeBtn.trigger("click");
 }
 
 function clickSendButton() {
@@ -123,7 +125,7 @@ function clickSendButton() {
     }
 
     if ($sendBtn.is(":hidden") || $sendBtn.hasClass("displayNone")) {
-        retryState.timer = setTimeout(clickSendButton, 500);
+        retryState.timer = setTimeout(retryLastAction, 500);
         return;
     }
 
@@ -160,12 +162,20 @@ function onGenerationStopped() {
     }
 }
 
+function onGenerationStarted(type) {
+    lastGenerationType = type || "normal";
+    log("생성 시작 감지, 타입:", lastGenerationType);
+}
+
 function bindEvents() {
     if (typeof eventSource === "undefined" || !event_types) {
         log("eventSource를 찾을 수 없어 이벤트 바인딩 생략");
         return;
     }
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+    if (event_types.GENERATION_STARTED) {
+        eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
+    }
     if (event_types.GENERATION_STOPPED) {
         eventSource.on(event_types.GENERATION_STOPPED, onGenerationStopped);
     }
