@@ -162,9 +162,22 @@ function onGenerationStopped() {
     }
 }
 
-function onGenerationStarted(type) {
-    lastGenerationType = type || "normal";
-    log("생성 시작 감지, 타입:", lastGenerationType);
+function trackButtonClicks() {
+    // 전송 버튼 클릭 감지
+    $(document).on("click", "#send_but", () => {
+        if (!retryState.active) {
+            lastGenerationType = "normal";
+            log("전송 버튼 클릭 감지 → 타입: normal");
+        }
+    });
+
+    // 스와이프 버튼 클릭 감지 (동적 요소라 delegation 사용)
+    $(document).on("click", ".swipe_right", () => {
+        if (!retryState.active) {
+            lastGenerationType = "swipe";
+            log("스와이프 버튼 클릭 감지 → 타입: swipe");
+        }
+    });
 }
 
 function bindEvents() {
@@ -173,9 +186,6 @@ function bindEvents() {
         return;
     }
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
-    if (event_types.GENERATION_STARTED) {
-        eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
-    }
     if (event_types.GENERATION_STOPPED) {
         eventSource.on(event_types.GENERATION_STOPPED, onGenerationStopped);
     }
@@ -218,6 +228,7 @@ jQuery(async () => {
     settings = loadSettings();
     hookToastr();
     bindEvents();
+    trackButtonClicks();
     addSettingsUI();
     log("확장 로드 완료");
 });
