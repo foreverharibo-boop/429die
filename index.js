@@ -22,7 +22,7 @@ const CONFIG = {
 };
 
 let settings;
-let lastGenerationType = "normal";
+let lastGenerationType = null;
 let retryState = {
     active: false,
     count: 0,
@@ -55,6 +55,7 @@ function matchesPattern(message) {
 function resetRetryState() {
     retryState.active = false;
     retryState.count = 0;
+    lastGenerationType = null;
     if (retryState.timer) {
         clearTimeout(retryState.timer);
         retryState.timer = null;
@@ -70,6 +71,10 @@ function stopRetrying(reason) {
 
 function scheduleRetry() {
     if (!settings.enabled) return;
+    if (lastGenerationType === null) {
+        log("유저가 아직 아무 버튼도 누르지 않음, 재시도 스킵");
+        return;
+    }
 
     if (settings.maxRetries > 0 && retryState.count >= settings.maxRetries) {
         log(`최대 재시도 횟수(${settings.maxRetries}회) 도달`);
@@ -154,6 +159,8 @@ function onMessageReceived() {
         log("생성 성공, 재시도 루프 종료");
         resetRetryState();
     }
+    // 성공했으니 다음 오류에 오작동하지 않도록 초기화
+    lastGenerationType = null;
 }
 
 function onGenerationStopped() {
