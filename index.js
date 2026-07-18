@@ -239,17 +239,41 @@ function retryLastAction() {
 
 function clickSwipeButton() {
     if (!retryState.active) return;
+
+    // '.swipe_right' 버튼을 직접 누르면 스와이프 인덱스가 계속 앞으로 넘어가버림.
+    // ST의 정식 재생성(슬래시 커맨드)을 써서 마지막 메시지를 다시 굴린다.
+    const ctx = (window.SillyTavern && window.SillyTavern.getContext)
+        ? window.SillyTavern.getContext()
+        : null;
+    const exec = ctx && (ctx.executeSlashCommandsWithOptions || ctx.executeSlashCommands);
+
+    if (exec) {
+        log("스와이프 재생성(슬래시 커맨드), 시도 #", retryState.count);
+        retryState.programmaticClick = true;
+        try {
+            exec.call(ctx, "/swipe");
+        } catch (e) {
+            console.error("[429die] 스와이프 커맨드 실패, 버튼 클릭으로 대체:", e);
+            fallbackSwipeClick();
+        }
+        setTimeout(() => { retryState.programmaticClick = false; }, 800);
+        return;
+    }
+
+    // 슬래시 커맨드를 못 쓰는 환경이면 버튼 클릭으로 대체
+    fallbackSwipeClick();
+}
+
+function fallbackSwipeClick() {
     const $swipeBtn = $("#chat").find(".mes").last().find(".swipe_right");
     if ($swipeBtn.length === 0) {
         log("스와이프 버튼을 찾을 수 없음, 전송 버튼으로 대체");
         clickSendButton();
         return;
     }
-    log("스와이프 버튼 클릭, 시도 #", retryState.count);
+    log("스와이프 버튼 클릭(대체), 시도 #", retryState.count);
     retryState.programmaticClick = true;
     $swipeBtn.trigger("click");
-    // ST가 스와이프 되돌리기 등으로 비동기 이벤트를 발생시킬 수 있어
-    // 플래그를 바로 풀지 않고 잠시 뒤에 해제
     setTimeout(() => { retryState.programmaticClick = false; }, 800);
 }
 
