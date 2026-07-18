@@ -97,6 +97,7 @@ let retryState = {
     timer: null,
     programmaticClick: false,
     suppressUntil: 0,
+    manuallyStopped: false,
 };
 
 function log(...args) {
@@ -180,14 +181,19 @@ function stopRetrying(reason) {
         log("중단:", reason);
         popup("info", `자동 재시도를 종료했습니다. (${reason})`);
     }
-    // 중단 직후 2초간은 새 오류가 와도 재시도를 시작하지 않음
-    // (막 눌러버린 스와이프/전송의 결과로 또 오류가 나서 되살아나는 것 방지)
-    retryState.suppressUntil = Date.now() + 2000;
+    // 중단 래치: 사용자가 직접 새 액션(전송/스와이프)을 하기 전까지
+    // ST의 자동 스와이프 되돌리기 등으로 재시도가 되살아나지 않게 완전 차단
+    retryState.manuallyStopped = true;
+    retryState.suppressUntil = Date.now() + 3000;
     resetRetryState();
 }
 
 function scheduleRetry() {
     if (!settings.enabled) return;
+    if (retryState.manuallyStopped) {
+        log("사용자가 중단함, 새 액션 전까지 재시도 안 함");
+        return;
+    }
     if (Date.now() < retryState.suppressUntil) {
         log("중단 직후 쿨다운 중, 재시도 스킵");
         return;
@@ -242,7 +248,9 @@ function clickSwipeButton() {
     log("스와이프 버튼 클릭, 시도 #", retryState.count);
     retryState.programmaticClick = true;
     $swipeBtn.trigger("click");
-    retryState.programmaticClick = false;
+    // ST가 스와이프 되돌리기 등으로 비동기 이벤트를 발생시킬 수 있어
+    // 플래그를 바로 풀지 않고 잠시 뒤에 해제
+    setTimeout(() => { retryState.programmaticClick = false; }, 800);
 }
 
 function clickSendButton() {
@@ -309,8 +317,11 @@ function trackButtonClicks() {
     // 전송 버튼 클릭 감지 (사용자가 직접 누른 경우만)
     $(document).on("click", "#send_but", () => {
         if (retryState.programmaticClick) return; // 자동 재시도 클릭은 무시
+        // 중단 직후 쿨다운 창 안의 클릭은 ST의 자동 동작일 수 있어 무시
+        if (retryState.manuallyStopped && Date.now() < retryState.suppressUntil) return;
         if (retryState.active) stopRetrying("사용자가 새로 전송함");
-        retryState.suppressUntil = 0; // 의도적 액션이므로 쿨다운 해제
+        retryState.manuallyStopped = false; // 사용자의 진짜 새 액션 → 래치 해제
+        retryState.suppressUntil = 0;
         lastGenerationType = "normal";
         log("전송 버튼 클릭 감지 → 타입: normal");
     });
@@ -318,8 +329,11 @@ function trackButtonClicks() {
     // 스와이프 버튼 클릭 감지 (동적 요소라 delegation 사용)
     $(document).on("click", ".swipe_right", () => {
         if (retryState.programmaticClick) return; // 자동 재시도 클릭은 무시
+        // 중단 직후 쿨다운 창 안의 클릭은 ST의 자동 스와이프 되돌리기일 수 있어 무시
+        if (retryState.manuallyStopped && Date.now() < retryState.suppressUntil) return;
         if (retryState.active) stopRetrying("사용자가 새로 스와이프함");
-        retryState.suppressUntil = 0; // 의도적 액션이므로 쿨다운 해제
+        retryState.manuallyStopped = false; // 사용자의 진짜 새 액션 → 래치 해제
+        retryState.suppressUntil = 0;
         lastGenerationType = "swipe";
         log("스와이프 버튼 클릭 감지 → 타입: swipe");
     });
