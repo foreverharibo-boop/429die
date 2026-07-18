@@ -176,6 +176,28 @@ function resetRetryState() {
     updateIndicator();
 }
 
+function stopSTGeneration() {
+    // ST에서 진행 중인 생성을 정지시킨다
+    try {
+        const ctx = (window.SillyTavern && window.SillyTavern.getContext)
+            ? window.SillyTavern.getContext()
+            : null;
+        // 1) 정식 API가 있으면 그걸 사용
+        if (ctx && typeof ctx.stopGeneration === "function") {
+            ctx.stopGeneration();
+        }
+    } catch (e) {
+        console.error("[429die] stopGeneration 호출 실패:", e);
+    }
+    // 2) 화면의 정지 버튼도 눌러준다 (있을 때만)
+    const $stop = $("#mes_stop");
+    if ($stop.length && $stop.is(":visible")) {
+        retryState.programmaticClick = true;
+        $stop.trigger("click");
+        setTimeout(() => { retryState.programmaticClick = false; }, 300);
+    }
+}
+
 function stopRetrying(reason) {
     if (retryState.active) {
         log("중단:", reason);
@@ -185,6 +207,8 @@ function stopRetrying(reason) {
     // ST의 자동 스와이프 되돌리기 등으로 재시도가 되살아나지 않게 완전 차단
     retryState.manuallyStopped = true;
     retryState.suppressUntil = Date.now() + 3000;
+    // 진행 중인 ST 생성도 멈춘다 (안 그러면 이미 시작된 재생성이 끝까지 진행됨)
+    stopSTGeneration();
     resetRetryState();
 }
 
