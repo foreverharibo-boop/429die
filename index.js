@@ -98,6 +98,7 @@ let retryState = {
     programmaticClick: false,
     suppressUntil: 0,
     manuallyStopped: false,
+    stoppingGeneration: false,
 };
 
 function log(...args) {
@@ -177,28 +178,33 @@ function resetRetryState() {
 }
 
 function stopSTGeneration() {
-    // ST에서 진행 중인 생성을 정지시킨다
+    // 우리가 stopGeneration을 부르면 GENERATION_STOPPED 이벤트가 발생하는데,
+    // 그 이벤트를 onGenerationStopped가 다시 받아 무한루프가 되므로 플래그로 차단
+    retryState.stoppingGeneration = true;
     try {
         const ctx = (window.SillyTavern && window.SillyTavern.getContext)
             ? window.SillyTavern.getContext()
             : null;
-        // 1) 정식 API가 있으면 그걸 사용
         if (ctx && typeof ctx.stopGeneration === "function") {
             ctx.stopGeneration();
         }
     } catch (e) {
         console.error("[429die] stopGeneration 호출 실패:", e);
     }
-    // 2) 화면의 정지 버튼도 눌러준다 (있을 때만)
     const $stop = $("#mes_stop");
     if ($stop.length && $stop.is(":visible")) {
         retryState.programmaticClick = true;
         $stop.trigger("click");
         setTimeout(() => { retryState.programmaticClick = false; }, 300);
     }
+    // 이벤트가 비동기로 도착할 수 있으니 잠시 뒤 플래그 해제
+    setTimeout(() => { retryState.stoppingGeneration = false; }, 500);
 }
 
 function stopRetrying(reason) {
+    // 이미 중단된 상태에서 또 불리면(중복 이벤트/더블 클릭 등) 아무것도 하지 않음
+    if (!retryState.active && retryState.manuallyStopped) return;
+
     if (retryState.active) {
         log("중단:", reason);
         popup("info", `자동 재시도를 종료했습니다. (${reason})`);
@@ -349,6 +355,8 @@ function onMessageReceived() {
 }
 
 function onGenerationStopped() {
+    // 우리가 유발한 정지 이벤트면 무시 (무한루프 방지)
+    if (retryState.stoppingGeneration) return;
     if (retryState.active) {
         stopRetrying("생성이 수동으로 중단됨");
     }
