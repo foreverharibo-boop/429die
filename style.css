@@ -37,6 +37,18 @@
     margin: 6px 0;
 }
 
+/* 체크박스 항목은 체크박스와 글자가 한 줄에 나란히 오도록 */
+.die429-settings label.checkbox_label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.die429-settings label.checkbox_label input[type="checkbox"] {
+    margin: 0;
+    flex-shrink: 0;
+}
+
 .die429-settings .text_pole {
     width: 100%;
     box-sizing: border-box;
