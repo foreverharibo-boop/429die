@@ -96,6 +96,7 @@ let retryState = {
     count: 0,
     timer: null,
     programmaticClick: false,
+    suppressUntil: 0,
 };
 
 function log(...args) {
@@ -157,7 +158,6 @@ function updateIndicator() {
     const text = `🔄 ${typeText} 재시도 중... (${countText})  ✕`;
     if ($ind.length === 0) {
         $ind = $(`<div id="die429_indicator"></div>`);
-        $ind.on("click", () => stopRetrying("사용자가 클릭하여 중단함"));
         // MovingUI가 body에 transform을 걸면 position:fixed가 깨지므로 html에 붙인다
         $("html").append($ind);
     }
@@ -180,11 +180,18 @@ function stopRetrying(reason) {
         log("중단:", reason);
         popup("info", `자동 재시도를 종료했습니다. (${reason})`);
     }
+    // 중단 직후 2초간은 새 오류가 와도 재시도를 시작하지 않음
+    // (막 눌러버린 스와이프/전송의 결과로 또 오류가 나서 되살아나는 것 방지)
+    retryState.suppressUntil = Date.now() + 2000;
     resetRetryState();
 }
 
 function scheduleRetry() {
     if (!settings.enabled) return;
+    if (Date.now() < retryState.suppressUntil) {
+        log("중단 직후 쿨다운 중, 재시도 스킵");
+        return;
+    }
     if (lastGenerationType === null) {
         log("유저가 아직 아무 버튼도 누르지 않음, 재시도 스킵");
         return;
@@ -292,10 +299,18 @@ function onGenerationStopped() {
 }
 
 function trackButtonClicks() {
+    // 배지(✕) 클릭/터치로 중단 — document 델리게이션이라 배지가 다시 그려져도 항상 동작
+    $(document).on("click pointerdown", "#die429_indicator", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        stopRetrying("사용자가 클릭하여 중단함");
+    });
+
     // 전송 버튼 클릭 감지 (사용자가 직접 누른 경우만)
     $(document).on("click", "#send_but", () => {
         if (retryState.programmaticClick) return; // 자동 재시도 클릭은 무시
         if (retryState.active) stopRetrying("사용자가 새로 전송함");
+        retryState.suppressUntil = 0; // 의도적 액션이므로 쿨다운 해제
         lastGenerationType = "normal";
         log("전송 버튼 클릭 감지 → 타입: normal");
     });
@@ -304,6 +319,7 @@ function trackButtonClicks() {
     $(document).on("click", ".swipe_right", () => {
         if (retryState.programmaticClick) return; // 자동 재시도 클릭은 무시
         if (retryState.active) stopRetrying("사용자가 새로 스와이프함");
+        retryState.suppressUntil = 0; // 의도적 액션이므로 쿨다운 해제
         lastGenerationType = "swipe";
         log("스와이프 버튼 클릭 감지 → 타입: swipe");
     });
