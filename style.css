@@ -1,3 +1,23 @@
+#die429_indicator {
+    position: fixed;
+    bottom: 70px;
+    right: 20px;
+    z-index: 9999;
+    background: rgb(from var(--SmartThemeQuoteColor, #c0392b) r g b / 1);
+    color: rgb(from var(--SmartThemeBodyColor, #ffffff) r g b / 1);
+    padding: 8px 14px;
+    border-radius: 20px;
+    font-size: 13px;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+    user-select: none;
+    white-space: nowrap;
+}
+
+#die429_indicator:hover {
+    opacity: 0.85;
+}
+
 .die429-settings label {
     display: block;
     margin: 6px 0;
@@ -6,4 +26,15 @@
 .die429-settings .text_pole {
     width: 100%;
     box-sizing: border-box;
+}
+
+.die429-warning {
+    font-size: 12px;
+    line-height: 1.5;
+    color: #f5d98a;
+    background: rgba(224, 196, 111, 0.12);
+    border-left: 3px solid #e0c46f;
+    border-radius: 6px;
+    padding: 9px 11px;
+    margin: 4px 0 8px;
 }

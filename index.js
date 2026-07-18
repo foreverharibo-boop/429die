@@ -9,15 +9,83 @@ const CONFIG = {
     backoffMultiplier: 1.5,  // 재시도마다 딜레이 증가
     maxDelay: 20000,         // 백오프 상한선
     patterns: [
-        "resource exhausted",
-        "error-code-429",
+        // --- Rate limit / 할당량 (429 계열) ---
         "429",
-        "please try again later",
+        "error-code-429",
+        "resource exhausted",
+        "rate limit",
+        "rate-limit",
+        "too many requests",
+        "quota",
+        "requests per minute",
+        "rpm",
+        "tpm",
+        // --- 과부하 / 서버가 잠깐 바쁨 ---
         "overloaded",
+        "please try again later",
+        "try again",
+        "temporarily unavailable",
+        "server is busy",
+        "capacity",
+        "at capacity",
+        // --- 일시적 서버 오류 (5xx 계열) ---
         "internal server error",
-        "503",
+        "500",
         "502",
         "bad gateway",
+        "503",
+        "service unavailable",
+        "504",
+        "gateway timeout",
+        "upstream",
+        // --- 타임아웃 / 네트워크 일시 장애 ---
+        "timeout",
+        "timed out",
+        "econnreset",
+        "econnrefused",
+        "connection reset",
+        "connection refused",
+        "network error",
+        "fetch failed",
+        "socket hang up",
+        "empty response",
+        "no response",
+        // --- 검열 / 콘텐츠 필터 (리롤하면 통과되는 경우가 많음) ---
+        "content filter",
+        "content_filter",
+        "safety",
+        "blocked",
+        "prohibited",
+        "recitation",
+        "no candidates",
+        "candidate was blocked",
+        "finishreason: safety",
+        "finishreason: other",
+        "finish_reason: safety",
+        "finish_reason: content_filter",
+    ],
+    // 아래 패턴이 오류 메시지에 있으면 위 패턴과 무관하게 재시도하지 않음
+    excludePatterns: [
+        "401",
+        "403",
+        "unauthorized",
+        "forbidden",
+        "invalid api key",
+        "invalid_api_key",
+        "api key",
+        "authentication",
+        "permission denied",
+        "400",
+        "bad request",
+        "invalid request",
+        "context length",
+        "context_length",
+        "maximum context",
+        "too long",
+        "insufficient",
+        "billing",
+        "credit",
+        "payment",
     ],
 };
 
@@ -33,9 +101,14 @@ function log(...args) {
     console.log("[429die]", ...args);
 }
 
+function popup(type, message) {
+    if (!settings || !settings.showPopup) return;
+    if (toastr[type]) toastr[type](message, "429die");
+}
+
 function loadSettings() {
     if (!extension_settings[EXT_ID]) {
-        extension_settings[EXT_ID] = { enabled: true, maxRetries: 20 };
+        extension_settings[EXT_ID] = { enabled: true, maxRetries: 20, showBadge: true, showPopup: true };
     }
     if (extension_settings[EXT_ID].enabled === undefined) {
         extension_settings[EXT_ID].enabled = true;
@@ -43,13 +116,51 @@ function loadSettings() {
     if (extension_settings[EXT_ID].maxRetries === undefined) {
         extension_settings[EXT_ID].maxRetries = 20;
     }
+    if (extension_settings[EXT_ID].showBadge === undefined) {
+        extension_settings[EXT_ID].showBadge = true;
+    }
+    if (extension_settings[EXT_ID].showPopup === undefined) {
+        extension_settings[EXT_ID].showPopup = true;
+    }
+    if (extension_settings[EXT_ID].catchMode === undefined) {
+        extension_settings[EXT_ID].catchMode = "safe"; // "safe" = A(재시도 가능한 오류만), "all" = 모든 오류
+    }
     return extension_settings[EXT_ID];
 }
 
 function matchesPattern(message) {
+    // "모든 오류" 모드: 오류 토스트가 뜨면 무조건 재시도
+    if (settings.catchMode === "all") {
+        return true;
+    }
+    // "안전" 모드(A): 재시도 가능한 오류만, 인증/요청/잔액 오류는 제외
     if (!message) return false;
     const lower = String(message).toLowerCase();
+    if (CONFIG.excludePatterns.some((p) => p && lower.includes(p.toLowerCase()))) {
+        log("제외 패턴에 해당하는 오류, 재시도 안 함:", lower);
+        return false;
+    }
     return CONFIG.patterns.some((p) => p && lower.includes(p.toLowerCase()));
+}
+
+function updateIndicator() {
+    let $ind = $("#die429_indicator");
+    if (!retryState.active || !settings.showBadge) {
+        $ind.remove();
+        return;
+    }
+    const typeText = lastGenerationType === "swipe" ? "스와이프" : "전송";
+    const countText = settings.maxRetries > 0
+        ? `${retryState.count}/${settings.maxRetries}`
+        : `${retryState.count}회`;
+    const text = `🔄 ${typeText} 재시도 중... (${countText})  ✕`;
+    if ($ind.length === 0) {
+        $ind = $(`<div id="die429_indicator"></div>`);
+        $ind.on("click", () => stopRetrying("사용자가 클릭하여 중단함"));
+        // MovingUI가 body에 transform을 걸면 position:fixed가 깨지므로 html에 붙인다
+        $("html").append($ind);
+    }
+    $ind.text(text);
 }
 
 function resetRetryState() {
@@ -60,11 +171,13 @@ function resetRetryState() {
         clearTimeout(retryState.timer);
         retryState.timer = null;
     }
+    updateIndicator();
 }
 
 function stopRetrying(reason) {
     if (retryState.active) {
         log("중단:", reason);
+        popup("info", `자동 재시도를 종료했습니다. (${reason})`);
     }
     resetRetryState();
 }
@@ -78,6 +191,7 @@ function scheduleRetry() {
 
     if (settings.maxRetries > 0 && retryState.count >= settings.maxRetries) {
         log(`최대 재시도 횟수(${settings.maxRetries}회) 도달`);
+        popup("warning", `최대 재시도 횟수(${settings.maxRetries}회)에 도달하여 종료했습니다.`);
         resetRetryState();
         return;
     }
@@ -93,6 +207,7 @@ function scheduleRetry() {
         );
     }
 
+    updateIndicator();
     log(`재시도 #${retryState.count} 예약됨, ${delay}ms 후 실행`);
 
     retryState.timer = setTimeout(() => retryLastAction(), delay);
@@ -157,6 +272,7 @@ function hookToastr() {
 function onMessageReceived() {
     if (retryState.active) {
         log("생성 성공, 재시도 루프 종료");
+        popup("success", "응답을 받았습니다. 자동 재시도를 종료합니다.");
         resetRetryState();
     }
     // 성공했으니 다음 오류에 오작동하지 않도록 초기화
@@ -211,8 +327,25 @@ function addSettingsUI() {
                     <input id="die429_enabled" type="checkbox" ${settings.enabled ? "checked" : ""}>
                     <span>활성화</span>
                 </label>
+                <label>재시도할 오류 범위
+                    <select id="die429_mode" class="text_pole">
+                        <option value="safe" ${settings.catchMode === "safe" ? "selected" : ""}>안전 모드 (권장) — 서버 과부하·타임아웃·검열 등 재시도로 풀릴 만한 오류만</option>
+                        <option value="all" ${settings.catchMode === "all" ? "selected" : ""}>모든 오류 — 어떤 오류든 무조건 재시도</option>
+                    </select>
+                </label>
+                <div id="die429_mode_warning" class="die429-warning" style="display:${settings.catchMode === "all" ? "block" : "none"};">
+                    ⚠️ '모든 오류' 모드는 API 키 오류, 잘못된 요청, 잔액 부족처럼 <b>다시 시도해도 절대 풀리지 않는 오류</b>까지 계속 재시도합니다. 헛되이 요청이 반복되거나 최악의 경우 키가 일시 차단될 수 있으니, 특별한 이유가 없다면 '안전 모드'를 쓰는 걸 권장해요.
+                </div>
                 <label>최대 시도 횟수 (0 = 무제한)
                     <input id="die429_max" type="number" min="0" value="${settings.maxRetries}" class="text_pole">
+                </label>
+                <label class="checkbox_label">
+                    <input id="die429_badge" type="checkbox" ${settings.showBadge ? "checked" : ""}>
+                    <span>재시도 중 화면에 표시 (429 배지)</span>
+                </label>
+                <label class="checkbox_label">
+                    <input id="die429_popup" type="checkbox" ${settings.showPopup ? "checked" : ""}>
+                    <span>알림 팝업 표시 (종료/성공 안내)</span>
                 </label>
             </div>
         </div>
@@ -225,8 +358,22 @@ function addSettingsUI() {
         if (!settings.enabled) stopRetrying("비활성화됨");
         saveSettingsDebounced();
     });
+    $("#die429_mode").on("change", function () {
+        settings.catchMode = $(this).val();
+        $("#die429_mode_warning").css("display", settings.catchMode === "all" ? "block" : "none");
+        saveSettingsDebounced();
+    });
     $("#die429_max").on("input", function () {
         settings.maxRetries = Number($(this).val()) || 0;
+        saveSettingsDebounced();
+    });
+    $("#die429_badge").on("change", function () {
+        settings.showBadge = $(this).is(":checked");
+        updateIndicator();
+        saveSettingsDebounced();
+    });
+    $("#die429_popup").on("change", function () {
+        settings.showPopup = $(this).is(":checked");
         saveSettingsDebounced();
     });
 }
