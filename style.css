@@ -12,10 +12,24 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
     user-select: none;
     white-space: nowrap;
+    /* 테마의 배경 블러(backdrop-filter)가 배지에 상속/적용되는 것을 차단 */
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+    filter: none !important;
+    /* 텍스트를 또렷하게 렌더링 */
+    text-shadow: none !important;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    opacity: 1 !important;
+}
+
+#die429_indicator * {
+    filter: none !important;
+    text-shadow: none !important;
 }
 
 #die429_indicator:hover {
-    opacity: 0.85;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
 }
 
 .die429-settings label {
