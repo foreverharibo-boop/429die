@@ -95,6 +95,7 @@ let retryState = {
     active: false,
     count: 0,
     timer: null,
+    programmaticClick: false,
 };
 
 function log(...args) {
@@ -224,6 +225,7 @@ function retryLastAction() {
 }
 
 function clickSwipeButton() {
+    if (!retryState.active) return;
     const $swipeBtn = $("#chat").find(".mes").last().find(".swipe_right");
     if ($swipeBtn.length === 0) {
         log("스와이프 버튼을 찾을 수 없음, 전송 버튼으로 대체");
@@ -231,7 +233,9 @@ function clickSwipeButton() {
         return;
     }
     log("스와이프 버튼 클릭, 시도 #", retryState.count);
+    retryState.programmaticClick = true;
     $swipeBtn.trigger("click");
+    retryState.programmaticClick = false;
 }
 
 function clickSendButton() {
@@ -250,7 +254,9 @@ function clickSendButton() {
     }
 
     log("전송 버튼 클릭, 시도 #", retryState.count);
+    retryState.programmaticClick = true;
     $sendBtn.trigger("click");
+    retryState.programmaticClick = false;
 }
 
 function hookToastr() {
@@ -286,20 +292,20 @@ function onGenerationStopped() {
 }
 
 function trackButtonClicks() {
-    // 전송 버튼 클릭 감지
+    // 전송 버튼 클릭 감지 (사용자가 직접 누른 경우만)
     $(document).on("click", "#send_but", () => {
-        if (!retryState.active) {
-            lastGenerationType = "normal";
-            log("전송 버튼 클릭 감지 → 타입: normal");
-        }
+        if (retryState.programmaticClick) return; // 자동 재시도 클릭은 무시
+        if (retryState.active) stopRetrying("사용자가 새로 전송함");
+        lastGenerationType = "normal";
+        log("전송 버튼 클릭 감지 → 타입: normal");
     });
 
     // 스와이프 버튼 클릭 감지 (동적 요소라 delegation 사용)
     $(document).on("click", ".swipe_right", () => {
-        if (!retryState.active) {
-            lastGenerationType = "swipe";
-            log("스와이프 버튼 클릭 감지 → 타입: swipe");
-        }
+        if (retryState.programmaticClick) return; // 자동 재시도 클릭은 무시
+        if (retryState.active) stopRetrying("사용자가 새로 스와이프함");
+        lastGenerationType = "swipe";
+        log("스와이프 버튼 클릭 감지 → 타입: swipe");
     });
 }
 
