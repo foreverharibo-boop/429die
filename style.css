@@ -3,8 +3,8 @@
     bottom: 70px;
     right: 20px;
     z-index: 9999;
-    background: rgb(from var(--SmartThemeQuoteColor, #c0392b) r g b / 1);
-    color: rgb(from var(--SmartThemeBodyColor, #ffffff) r g b / 1);
+    background: #ffffff;
+    color: #222222;
     padding: 8px 14px;
     border-radius: 20px;
     font-size: 13px;
