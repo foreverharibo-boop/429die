@@ -325,7 +325,9 @@ function clickSendButton() {
     log("전송 버튼 클릭, 시도 #", retryState.count);
     retryState.programmaticClick = true;
     $sendBtn.trigger("click");
-    retryState.programmaticClick = false;
+    // GENERATION_STARTED 이벤트가 클릭 직후 비동기로 늦게 뜰 수 있으므로
+    // 스와이프 쪽과 동일하게 약간의 유예를 두고 플래그를 해제한다
+    setTimeout(() => { retryState.programmaticClick = false; }, 800);
 }
 
 function hookToastr() {
@@ -360,6 +362,25 @@ function onGenerationStopped() {
     if (retryState.active) {
         stopRetrying("생성이 수동으로 중단됨");
     }
+}
+
+function onGenerationStarted(type) {
+    // 우리가 재시도용으로 스스로 트리거한 생성이면 무시 (무한루프 방지)
+    if (retryState.programmaticClick) return;
+    // 중단 직후 쿨다운 창 안이면 ST의 자동 동작일 수 있어 무시
+    if (retryState.manuallyStopped && Date.now() < retryState.suppressUntil) return;
+    // 백그라운드용 quiet 생성(요약 등)은 사용자의 실제 액션이 아니므로 추적하지 않음
+    if (type === "quiet") return;
+
+    // 버튼 클릭이든, 빠른답장/슬래시 커맨드든, 어떤 경로로 생성이 시작됐든
+    // 여기서 한 번에 잡아준다 (기존 click 감지의 상위 호환)
+    if (retryState.active) {
+        stopRetrying(type === "swipe" ? "사용자가 새로 스와이프함" : "사용자가 새로 전송함");
+    }
+    retryState.manuallyStopped = false; // 사용자의 진짜 새 액션 → 래치 해제
+    retryState.suppressUntil = 0;
+    lastGenerationType = (type === "swipe") ? "swipe" : "normal";
+    log(`생성 시작 감지(type=${type}) → 타입: ${lastGenerationType}`);
 }
 
 function trackButtonClicks() {
@@ -403,6 +424,10 @@ function bindEvents() {
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
     if (event_types.GENERATION_STOPPED) {
         eventSource.on(event_types.GENERATION_STOPPED, onGenerationStopped);
+    }
+    if (event_types.GENERATION_STARTED) {
+        // 전송 버튼 클릭이 아니라 빠른답장/슬래시 커맨드 등으로 생성이 시작돼도 놓치지 않기 위한 감지
+        eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
     }
 }
 
