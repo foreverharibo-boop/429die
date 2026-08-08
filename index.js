@@ -149,34 +149,20 @@ function matchesPattern(message) {
 
 function applyBadgeStyle($ind) {
     // 테마 CSS나 미디어쿼리에 상관없이 인라인 스타일로 강제 고정.
+    // 웹·모바일 공통: 가로 중앙 + 입력창 위(하단)에 고정.
     const el = $ind[0];
     if (!el) return;
     const s = el.style;
     const set = (k, v) => s.setProperty(k, v, "important");
 
-    const isMobile = window.innerWidth <= 1000;
-
     set("position", "fixed");
     set("z-index", "2147483647"); // 최상단
-
-    if (isMobile) {
-        // 모바일: 가로 중앙 + 입력창 위(하단). 입력창이 크므로 넉넉히 띄운다.
-        set("left", "50%");
-        set("right", "auto");
-        set("transform", "translateX(-50%)");
-        set("bottom", "calc(72px + env(safe-area-inset-bottom, 0px))");
-        set("top", "auto");
-        set("max-width", "calc(100vw - 24px)");
-    } else {
-        // 웹(데스크탑): 우측 하단 (기존에 정상 동작하던 방식)
-        set("left", "auto");
-        set("right", "20px");
-        set("transform", "none");
-        set("bottom", "70px");
-        set("top", "auto");
-        set("max-width", "calc(100vw - 40px)");
-    }
-
+    set("left", "50%");
+    set("right", "auto");
+    set("transform", "translateX(-50%)");
+    set("bottom", "calc(72px + env(safe-area-inset-bottom, 0px))");
+    set("top", "auto");
+    set("max-width", "calc(100vw - 24px)");
     set("width", "max-content");
     set("box-sizing", "border-box");
     set("margin", "0");
