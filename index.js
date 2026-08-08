@@ -149,21 +149,34 @@ function matchesPattern(message) {
 
 function applyBadgeStyle($ind) {
     // 테마 CSS나 미디어쿼리에 상관없이 인라인 스타일로 강제 고정.
-    // 화면 정중앙(가로) + 입력창 위(하단)에 고정.
     const el = $ind[0];
     if (!el) return;
     const s = el.style;
     const set = (k, v) => s.setProperty(k, v, "important");
 
+    const isMobile = window.innerWidth <= 1000;
+
     set("position", "fixed");
-    set("left", "50%");
-    set("right", "auto");
-    // 화면 정중앙에 강제 배치 (위치 문제 진단용 — 여기 뜨면 위치 계산이 원인)
-    set("top", "50%");
-    set("bottom", "auto");
-    set("transform", "translate(-50%, -50%)");
     set("z-index", "2147483647"); // 최상단
-    set("max-width", "calc(100vw - 24px)");
+
+    if (isMobile) {
+        // 모바일: 가로 중앙 + 입력창 위(하단). 입력창이 크므로 넉넉히 띄운다.
+        set("left", "50%");
+        set("right", "auto");
+        set("transform", "translateX(-50%)");
+        set("bottom", "calc(72px + env(safe-area-inset-bottom, 0px))");
+        set("top", "auto");
+        set("max-width", "calc(100vw - 24px)");
+    } else {
+        // 웹(데스크탑): 우측 하단 (기존에 정상 동작하던 방식)
+        set("left", "auto");
+        set("right", "20px");
+        set("transform", "none");
+        set("bottom", "70px");
+        set("top", "auto");
+        set("max-width", "calc(100vw - 40px)");
+    }
+
     set("width", "max-content");
     set("box-sizing", "border-box");
     set("margin", "0");
@@ -202,7 +215,7 @@ function updateIndicator() {
     const text = `🔄 ${typeText} 재시도 중... (${countText})  ✕`;
     if ($ind.length === 0) {
         $ind = $(`<div id="die429_indicator"></div>`);
-        $("html").append($ind);
+        $("body").append($ind);
     }
     $ind.text(text);
     applyBadgeStyle($ind);
@@ -215,16 +228,10 @@ function showDemoBadge() {
 
     const el = document.createElement("div");
     el.id = "die429_indicator";
-    el.textContent = "🔄 429die 테스트 배지  ✕";
-    // 뷰포트 최상위에 확실히 붙도록 body에 직접 부착
+    el.textContent = "🔄 전송 재시도 중... (3/20)  ✕ (테스트)";
     document.body.appendChild(el);
 
     applyBadgeStyle($(el));
-    // 진단용: 눈에 확 띄는 빨간 배경
-    el.style.setProperty("background", "#e23b3b", "important");
-    el.style.setProperty("color", "#ffffff", "important");
-
-    log("데모 배지 부착됨:", el.getBoundingClientRect());
 
     // 5초 뒤 자동 제거
     setTimeout(() => {
