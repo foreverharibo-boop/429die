@@ -2,7 +2,9 @@
     position: fixed;
     bottom: 70px;
     right: 20px;
-    z-index: 9999;
+    /* 안전영역(노치·홈바) 아래로 숨지 않도록 여백 확보 */
+    bottom: calc(70px + env(safe-area-inset-bottom, 0px));
+    z-index: 99999;
     background: #ffffff;
     color: #222222;
     padding: 8px 14px;
@@ -12,6 +14,10 @@
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
     user-select: none;
     white-space: nowrap;
+    /* 화면 밖으로 삐져나가지 않도록 최대 너비 제한 */
+    max-width: calc(100vw - 32px);
+    overflow: hidden;
+    text-overflow: ellipsis;
     /* 테마의 배경 블러(backdrop-filter)가 배지에 상속/적용되는 것을 차단 */
     backdrop-filter: none !important;
     -webkit-backdrop-filter: none !important;
@@ -21,6 +27,16 @@
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
     opacity: 1 !important;
+}
+
+/* 모바일: 입력창에 가리지 않도록 더 위로, 가로 중앙 정렬 */
+@media (max-width: 1000px) {
+    #die429_indicator {
+        bottom: calc(90px + env(safe-area-inset-bottom, 0px));
+        right: 50%;
+        transform: translateX(50%);
+        max-width: calc(100vw - 24px);
+    }
 }
 
 #die429_indicator * {
