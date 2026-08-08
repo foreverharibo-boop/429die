@@ -158,10 +158,10 @@ function applyBadgeStyle($ind) {
     set("position", "fixed");
     set("left", "50%");
     set("right", "auto");
-    set("transform", "translateX(-50%)");
-    // 입력창 위. 안전영역(홈바) 있으면 그만큼 더 위로.
-    set("bottom", "calc(90px + env(safe-area-inset-bottom, 0px))");
-    set("top", "auto");
+    // 화면 정중앙에 강제 배치 (위치 문제 진단용 — 여기 뜨면 위치 계산이 원인)
+    set("top", "50%");
+    set("bottom", "auto");
+    set("transform", "translate(-50%, -50%)");
     set("z-index", "2147483647"); // 최상단
     set("max-width", "calc(100vw - 24px)");
     set("width", "max-content");
@@ -210,14 +210,28 @@ function updateIndicator() {
 
 function showDemoBadge() {
     // 실제 재시도 없이 배지 위치만 확인하기 위한 데모 배지
-    $("#die429_indicator").remove();
-    const $ind = $(`<div id="die429_indicator">🔄 전송 재시도 중... (3/20)  ✕ (테스트)</div>`);
-    $("html").append($ind);
-    applyBadgeStyle($ind);
+    const old = document.getElementById("die429_indicator");
+    if (old) old.remove();
+
+    const el = document.createElement("div");
+    el.id = "die429_indicator";
+    el.textContent = "🔄 429die 테스트 배지  ✕";
+    // 뷰포트 최상위에 확실히 붙도록 body에 직접 부착
+    document.body.appendChild(el);
+
+    applyBadgeStyle($(el));
+    // 진단용: 눈에 확 띄는 빨간 배경
+    el.style.setProperty("background", "#e23b3b", "important");
+    el.style.setProperty("color", "#ffffff", "important");
+
+    log("데모 배지 부착됨:", el.getBoundingClientRect());
+
     // 5초 뒤 자동 제거
     setTimeout(() => {
-        // 실제 재시도가 도는 중이 아니면 데모 배지 제거
-        if (!retryState.active) $("#die429_indicator").remove();
+        if (!retryState.active) {
+            const cur = document.getElementById("die429_indicator");
+            if (cur) cur.remove();
+        }
     }, 5000);
 }
 
