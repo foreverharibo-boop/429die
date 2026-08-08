@@ -166,6 +166,18 @@ function updateIndicator() {
     $ind.text(text);
 }
 
+function showDemoBadge() {
+    // 실제 재시도 없이 배지 위치만 확인하기 위한 데모 배지
+    $("#die429_indicator").remove();
+    const $ind = $(`<div id="die429_indicator">🔄 전송 재시도 중... (3/20)  ✕ (테스트)</div>`);
+    $("html").append($ind);
+    // 5초 뒤 자동 제거
+    setTimeout(() => {
+        // 실제 재시도가 도는 중이 아니면 데모 배지 제거
+        if (!retryState.active) $("#die429_indicator").remove();
+    }, 5000);
+}
+
 function resetRetryState() {
     retryState.active = false;
     retryState.count = 0;
@@ -495,11 +507,46 @@ function addSettingsUI() {
     });
 }
 
+function registerSlashCommands() {
+    try {
+        const ctx = (window.SillyTavern && window.SillyTavern.getContext)
+            ? window.SillyTavern.getContext()
+            : null;
+        if (!ctx) {
+            log("getContext 없음, 슬래시 커맨드 등록 생략");
+            return;
+        }
+
+        const handler = () => {
+            showDemoBadge();
+            return "429die 테스트 배지를 5초간 표시합니다.";
+        };
+
+        // 신형 API 우선, 없으면 구형 API로 대체
+        if (ctx.SlashCommandParser && ctx.SlashCommand && ctx.SlashCommandParser.addCommandObject) {
+            ctx.SlashCommandParser.addCommandObject(ctx.SlashCommand.fromProps({
+                name: "429test",
+                callback: handler,
+                helpString: "429die 배지가 화면에 어떻게 뜨는지 테스트로 표시합니다.",
+            }));
+            log("슬래시 커맨드 /429test 등록됨 (신형 API)");
+        } else if (typeof ctx.registerSlashCommand === "function") {
+            ctx.registerSlashCommand("429test", handler, [], "429die 배지 테스트 표시", true, true);
+            log("슬래시 커맨드 /429test 등록됨 (구형 API)");
+        } else {
+            log("슬래시 커맨드 API를 찾을 수 없음");
+        }
+    } catch (e) {
+        console.error("[429die] 슬래시 커맨드 등록 실패:", e);
+    }
+}
+
 jQuery(async () => {
     settings = loadSettings();
     hookToastr();
     bindEvents();
     trackButtonClicks();
     addSettingsUI();
+    registerSlashCommands();
     log("확장 로드 완료");
 });
