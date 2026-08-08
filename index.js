@@ -476,11 +476,18 @@ function addSettingsUI() {
                     <input id="die429_popup" type="checkbox" ${settings.showPopup ? "checked" : ""}>
                     <span>알림 팝업 표시 (종료/성공 안내)</span>
                 </label>
+                <div class="die429-preview-wrap">
+                    <input id="die429_preview" type="button" class="menu_button" value="배지 미리보기 (5초)">
+                </div>
             </div>
         </div>
     </div>`;
 
     $("#extensions_settings").append(html);
+
+    $("#die429_preview").on("click", function () {
+        showDemoBadge();
+    });
 
     $("#die429_enabled").on("change", function () {
         settings.enabled = $(this).is(":checked");

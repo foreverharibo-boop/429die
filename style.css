@@ -80,3 +80,12 @@
     padding: 9px 11px;
     margin: 4px 0 8px;
 }
+
+.die429-preview-wrap {
+    margin-top: 10px;
+}
+
+.die429-preview-wrap .menu_button {
+    width: 100%;
+    box-sizing: border-box;
+}
