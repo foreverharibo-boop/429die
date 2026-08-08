@@ -147,6 +147,48 @@ function matchesPattern(message) {
     return CONFIG.patterns.some((p) => p && lower.includes(p.toLowerCase()));
 }
 
+function applyBadgeStyle($ind) {
+    // 테마 CSS나 미디어쿼리에 상관없이 인라인 스타일로 강제 고정.
+    // 화면 정중앙(가로) + 입력창 위(하단)에 고정.
+    const el = $ind[0];
+    if (!el) return;
+    const s = el.style;
+    const set = (k, v) => s.setProperty(k, v, "important");
+
+    set("position", "fixed");
+    set("left", "50%");
+    set("right", "auto");
+    set("transform", "translateX(-50%)");
+    // 입력창 위. 안전영역(홈바) 있으면 그만큼 더 위로.
+    set("bottom", "calc(90px + env(safe-area-inset-bottom, 0px))");
+    set("top", "auto");
+    set("z-index", "2147483647"); // 최상단
+    set("max-width", "calc(100vw - 24px)");
+    set("width", "max-content");
+    set("box-sizing", "border-box");
+    set("margin", "0");
+    set("padding", "8px 16px");
+    set("background", "#ffffff");
+    set("color", "#222222");
+    set("border-radius", "20px");
+    set("font-size", "13px");
+    set("line-height", "1.4");
+    set("cursor", "pointer");
+    set("box-shadow", "0 2px 10px rgba(0,0,0,0.4)");
+    set("user-select", "none");
+    set("white-space", "nowrap");
+    set("overflow", "hidden");
+    set("text-overflow", "ellipsis");
+    set("display", "block");
+    set("visibility", "visible");
+    set("opacity", "1");
+    set("pointer-events", "auto");
+    set("backdrop-filter", "none");
+    set("-webkit-backdrop-filter", "none");
+    set("filter", "none");
+    set("text-shadow", "none");
+}
+
 function updateIndicator() {
     let $ind = $("#die429_indicator");
     if (!retryState.active || !settings.showBadge) {
@@ -160,10 +202,10 @@ function updateIndicator() {
     const text = `🔄 ${typeText} 재시도 중... (${countText})  ✕`;
     if ($ind.length === 0) {
         $ind = $(`<div id="die429_indicator"></div>`);
-        // MovingUI가 body에 transform을 걸면 position:fixed가 깨지므로 html에 붙인다
         $("html").append($ind);
     }
     $ind.text(text);
+    applyBadgeStyle($ind);
 }
 
 function showDemoBadge() {
@@ -171,6 +213,7 @@ function showDemoBadge() {
     $("#die429_indicator").remove();
     const $ind = $(`<div id="die429_indicator">🔄 전송 재시도 중... (3/20)  ✕ (테스트)</div>`);
     $("html").append($ind);
+    applyBadgeStyle($ind);
     // 5초 뒤 자동 제거
     setTimeout(() => {
         // 실제 재시도가 도는 중이 아니면 데모 배지 제거
