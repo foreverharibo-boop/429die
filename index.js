@@ -147,43 +147,48 @@ function matchesPattern(message) {
     return CONFIG.patterns.some((p) => p && lower.includes(p.toLowerCase()));
 }
 
+function getBadgeParent() {
+    // 입력창 컨테이너를 우선 부모로 사용 (뷰포트 기준 fixed가 모바일에서 깨지는 것 회피)
+    return document.getElementById("form_sheld")
+        || document.getElementById("sheld")
+        || document.body;
+}
+
 function applyBadgeStyle($ind) {
-    // 테마 CSS나 미디어쿼리에 상관없이 인라인 스타일로 강제 고정.
     const el = $ind[0];
     if (!el) return;
     const s = el.style;
     const set = (k, v) => s.setProperty(k, v, "important");
 
-    set("position", "fixed");
-    set("z-index", "2147483647"); // 최상단
-    set("left", "50%");
-    set("right", "auto");
-    set("transform", "translateX(-50%)");
-    set("top", "auto");
+    const parent = el.parentElement;
+    const anchoredToForm = parent && (parent.id === "form_sheld" || parent.id === "sheld");
 
-    // 입력창(#send_form)의 실제 화면 위치를 찾아 그 바로 위에 배치.
-    // 모바일에선 bottom+env() 계산이 배지를 화면 밖으로 밀어내므로 이 방식이 확실함.
-    const form = document.getElementById("send_form");
-    let placed = false;
-    if (form) {
-        const rect = form.getBoundingClientRect();
-        // rect.top이 유효(화면 안)하면 그 위로 배치
-        if (rect && rect.top > 0 && rect.top <= window.innerHeight) {
-            const gap = 10; // 입력창과의 간격
-            const bottomFromViewport = window.innerHeight - rect.top + gap;
-            set("bottom", bottomFromViewport + "px");
-            placed = true;
-        }
-    }
-    if (!placed) {
-        // 입력창을 못 찾으면 안전한 기본값
+    if (anchoredToForm) {
+        // 입력창 컨테이너 기준으로 그 위에 붙인다 (웹·모바일 공통으로 확실)
+        set("position", "absolute");
+        set("left", "50%");
+        set("right", "auto");
+        set("transform", "translateX(-50%)");
+        set("bottom", "100%");        // 컨테이너(입력창)의 바로 위
+        set("top", "auto");
+        set("margin-bottom", "8px");
+    } else {
+        // 예외: 컨테이너를 못 찾으면 뷰포트 하단 기준
+        set("position", "fixed");
+        set("left", "50%");
+        set("right", "auto");
+        set("transform", "translateX(-50%)");
         set("bottom", "calc(72px + env(safe-area-inset-bottom, 0px))");
+        set("top", "auto");
     }
 
+    set("z-index", "2147483647");
     set("max-width", "calc(100vw - 24px)");
     set("width", "max-content");
     set("box-sizing", "border-box");
-    set("margin", "0");
+    set("margin-left", "0");
+    set("margin-right", "0");
+    set("margin-top", "0");
     set("padding", "8px 16px");
     set("background", "#ffffff");
     set("color", "#222222");
@@ -219,7 +224,15 @@ function updateIndicator() {
     const text = `🔄 ${typeText} 재시도 중... (${countText})  ✕`;
     if ($ind.length === 0) {
         $ind = $(`<div id="die429_indicator"></div>`);
-        $("body").append($ind);
+        const parent = getBadgeParent();
+        // absolute 배치가 먹도록 부모를 positioned 상태로 + 배지가 잘리지 않게
+        if (parent !== document.body) {
+            if (getComputedStyle(parent).position === "static") {
+                parent.style.setProperty("position", "relative");
+            }
+            parent.style.setProperty("overflow", "visible");
+        }
+        parent.appendChild($ind[0]);
     }
     $ind.text(text);
     applyBadgeStyle($ind);
@@ -233,7 +246,14 @@ function showDemoBadge() {
     const el = document.createElement("div");
     el.id = "die429_indicator";
     el.textContent = "🔄 전송 재시도 중... (3/20)  ✕ (테스트)";
-    document.body.appendChild(el);
+    const parent = getBadgeParent();
+    if (parent !== document.body) {
+        if (getComputedStyle(parent).position === "static") {
+            parent.style.setProperty("position", "relative");
+        }
+        parent.style.setProperty("overflow", "visible");
+    }
+    parent.appendChild(el);
 
     applyBadgeStyle($(el));
 
