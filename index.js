@@ -149,7 +149,6 @@ function matchesPattern(message) {
 
 function applyBadgeStyle($ind) {
     // 테마 CSS나 미디어쿼리에 상관없이 인라인 스타일로 강제 고정.
-    // 웹·모바일 공통: 가로 중앙 + 입력창 위(하단)에 고정.
     const el = $ind[0];
     if (!el) return;
     const s = el.style;
@@ -160,8 +159,27 @@ function applyBadgeStyle($ind) {
     set("left", "50%");
     set("right", "auto");
     set("transform", "translateX(-50%)");
-    set("bottom", "calc(72px + env(safe-area-inset-bottom, 0px))");
     set("top", "auto");
+
+    // 입력창(#send_form)의 실제 화면 위치를 찾아 그 바로 위에 배치.
+    // 모바일에선 bottom+env() 계산이 배지를 화면 밖으로 밀어내므로 이 방식이 확실함.
+    const form = document.getElementById("send_form");
+    let placed = false;
+    if (form) {
+        const rect = form.getBoundingClientRect();
+        // rect.top이 유효(화면 안)하면 그 위로 배치
+        if (rect && rect.top > 0 && rect.top <= window.innerHeight) {
+            const gap = 10; // 입력창과의 간격
+            const bottomFromViewport = window.innerHeight - rect.top + gap;
+            set("bottom", bottomFromViewport + "px");
+            placed = true;
+        }
+    }
+    if (!placed) {
+        // 입력창을 못 찾으면 안전한 기본값
+        set("bottom", "calc(72px + env(safe-area-inset-bottom, 0px))");
+    }
+
     set("max-width", "calc(100vw - 24px)");
     set("width", "max-content");
     set("box-sizing", "border-box");
