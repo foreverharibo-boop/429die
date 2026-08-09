@@ -91,6 +91,7 @@ const CONFIG = {
 
 let settings;
 let lastGenerationType = null;
+let mainGenInFlight = false; // 본 채팅 생성이 진행 중인지 (generateRaw 백그라운드 생성은 이 이벤트를 안 냄)
 let retryState = {
     active: false,
     count: 0,
@@ -313,6 +314,7 @@ function stopRetrying(reason) {
     // ST의 자동 스와이프 되돌리기 등으로 재시도가 되살아나지 않게 완전 차단
     retryState.manuallyStopped = true;
     retryState.suppressUntil = Date.now() + 3000;
+    mainGenInFlight = false;
     // 진행 중인 ST 생성도 멈춘다 (안 그러면 이미 시작된 재생성이 끝까지 진행됨)
     stopSTGeneration();
     resetRetryState();
@@ -332,6 +334,14 @@ function scheduleRetry() {
         log("유저가 아직 아무 버튼도 누르지 않음, 재시도 스킵");
         return;
     }
+    // 본 채팅 생성이 진행 중이 아니면(= generateRaw 같은 백그라운드 생성의 오류면) 재시도 안 함.
+    // generateRaw는 GENERATION_STARTED를 발생시키지 않으므로 mainGenInFlight가 false로 남아있다.
+    if (!mainGenInFlight) {
+        log("본 채팅 생성이 진행 중이 아님(백그라운드 오류로 판단), 재시도 스킵");
+        return;
+    }
+    // 이번 시도는 여기서 처리했으므로 플래그를 내린다 (재시도가 새 생성을 시작하면 다시 켜짐)
+    mainGenInFlight = false;
 
     if (settings.maxRetries > 0 && retryState.count >= settings.maxRetries) {
         log(`최대 재시도 횟수(${settings.maxRetries}회) 도달`);
@@ -359,6 +369,10 @@ function scheduleRetry() {
 
 function retryLastAction() {
     if (!retryState.active) return;
+
+    // 우리가 시작하는 재시도 생성은 programmaticClick 때문에 onGenerationStarted에서
+    // mainGenInFlight가 안 켜지므로, 여기서 직접 켜준다 (재시도 생성의 실패도 감지하기 위함).
+    mainGenInFlight = true;
 
     if (lastGenerationType === "swipe") {
         clickSwipeButton();
@@ -482,6 +496,7 @@ function onMessageReceived() {
     }
     // 성공했으니 다음 오류에 오작동하지 않도록 초기화
     lastGenerationType = null;
+    mainGenInFlight = false;
 }
 
 function onGenerationStopped() {
@@ -498,16 +513,18 @@ function onGenerationStarted(type) {
     // 중단 직후 쿨다운 창 안이면 ST의 자동 동작일 수 있어 무시
     if (retryState.manuallyStopped && Date.now() < retryState.suppressUntil) return;
     // 백그라운드용 quiet 생성(요약 등)은 사용자의 실제 액션이 아니므로 추적하지 않음
+    // (참고: generateRaw 기반 사이드채팅 등은 GENERATION_STARTED 자체를 발생시키지 않음)
     if (type === "quiet") return;
 
-    // 버튼 클릭이든, 빠른답장/슬래시 커맨드든, 어떤 경로로 생성이 시작됐든
-    // 여기서 한 번에 잡아준다 (기존 click 감지의 상위 호환)
+    // 버튼 클릭이든, 빠른답장(QR)/슬래시 커맨드든 어떤 경로로 본 채팅 생성이 시작됐든
+    // 여기서 잡아준다. generateRaw 백그라운드 생성은 이 이벤트를 안 내므로 안전.
     if (retryState.active) {
         stopRetrying(type === "swipe" ? "사용자가 새로 스와이프함" : "사용자가 새로 전송함");
     }
     retryState.manuallyStopped = false; // 사용자의 진짜 새 액션 → 래치 해제
     retryState.suppressUntil = 0;
     lastGenerationType = (type === "swipe") ? "swipe" : "normal";
+    mainGenInFlight = true;
     log(`생성 시작 감지(type=${type}) → 타입: ${lastGenerationType}`);
 }
 
