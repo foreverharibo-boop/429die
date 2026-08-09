@@ -410,6 +410,34 @@ function fallbackSwipeClick() {
 function clickSendButton() {
     if (!retryState.active) return;
 
+    // 유저가 기본 전송 버튼 대신 Quick Reply(빠답) 등으로 메시지를 보내는 경우가 있어,
+    // 버튼을 눌러도 전송이 안 될 수 있다. ST 정식 슬래시 커맨드로 재생성을 실행한다.
+    const ctx = (window.SillyTavern && window.SillyTavern.getContext)
+        ? window.SillyTavern.getContext()
+        : null;
+    const exec = ctx && (ctx.executeSlashCommandsWithOptions || ctx.executeSlashCommands);
+
+    if (exec) {
+        // 유저 빠답과 동일한 동작:
+        // 입력창이 비어있으면 재생성(/trigger)만, 내용이 있으면 보내고(/send) 재생성(/trigger).
+        const cmd = '/if left={{input}} right="" rule=eq else={: /send {{input}} | /trigger :} {: /trigger :}';
+        log("전송 재생성(슬래시 커맨드), 시도 #", retryState.count);
+        retryState.programmaticClick = true;
+        try {
+            exec.call(ctx, cmd);
+        } catch (e) {
+            console.error("[429die] 전송 커맨드 실패, 버튼 클릭으로 대체:", e);
+            fallbackSendClick();
+        }
+        setTimeout(() => { retryState.programmaticClick = false; }, 800);
+        return;
+    }
+
+    // 슬래시 커맨드를 못 쓰는 환경이면 버튼 클릭으로 대체
+    fallbackSendClick();
+}
+
+function fallbackSendClick() {
     const $sendBtn = $("#send_but");
     if ($sendBtn.length === 0) {
         log("전송 버튼을 찾을 수 없음, 중단");
@@ -422,7 +450,7 @@ function clickSendButton() {
         return;
     }
 
-    log("전송 버튼 클릭, 시도 #", retryState.count);
+    log("전송 버튼 클릭(대체), 시도 #", retryState.count);
     retryState.programmaticClick = true;
     $sendBtn.trigger("click");
     // GENERATION_STARTED 이벤트가 클릭 직후 비동기로 늦게 뜰 수 있으므로
