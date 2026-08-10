@@ -703,6 +703,8 @@ function registerSlashCommands() {
 
         // 피치 위스퍼처럼 본채팅 밖에서 발생한 429 오류가 429die에 잡히는지
         // 실제 메시지 전송 없이 확인하는 드라이런 테스트.
+        // 제보 상황과 동일하게: 본채팅이 유휴 상태(생성 안 도는 중)일 때
+        // 백그라운드 확장의 429 토스트가 떠도 429die가 무시하는지 검증한다.
         const backgroundErrorHandler = () => {
             if (!settings.enabled) {
                 return "429die가 꺼져 있습니다. 확장을 켠 뒤 다시 실행해주세요.";
@@ -719,11 +721,11 @@ function registerSlashCommands() {
             };
 
             try {
-                // 피치 위스퍼의 백그라운드 generateRaw를 본채팅 생성으로
-                // 잘못 인식한 상황만 재현한다. GENERATION_ENDED는 호출하지 않아
-                // scheduleRetry와 실제 /trigger가 절대 실행되지 않는다.
-                lastGenerationType = "normal";
-                mainGenInFlight = true;
+                // 제보자 상황 재현: 본채팅 유휴 상태 + 백그라운드(peach) 429 토스트.
+                // 유휴 상태이므로 mainGenInFlight는 false 그대로 둔다.
+                // (peach의 generateRaw는 GENERATION_STARTED를 안 내므로 실제로도 false다)
+                lastGenerationType = "normal"; // 과거에 전송한 적 있는 상태 가정
+                mainGenInFlight = false;
                 pendingError = false;
                 gotMessageThisGen = false;
 
@@ -732,14 +734,16 @@ function registerSlashCommands() {
                     "Peach Whisper 테스트",
                 );
 
-                const misclassified = pendingError && !gotMessageThisGen;
+                // 올바른 동작: 유휴 상태의 백그라운드 오류는 무시되어야 하므로
+                // pendingError가 켜지지 않고 재시도도 시작되지 않아야 한다.
+                const misclassified = pendingError || retryState.active;
                 if (misclassified) {
-                    log("백그라운드 오류 오인 조건 재현됨 (드라이런, 실제 재시도 없음)");
-                    return "테스트 결과: 백그라운드 429 오류를 본채팅 오류로 오인하는 조건이 재현되었습니다. 실제 메시지는 전송하지 않았습니다.";
+                    log("❌ 백그라운드 오류를 본채팅 오류로 오인함 (드라이런, 실제 재시도 없음)");
+                    return "테스트 실패: 백그라운드 429 오류에 반응했습니다. 이 버전은 배포하면 안 됩니다.";
                 }
 
-                log("백그라운드 오류가 무시됨 (드라이런)");
-                return "테스트 결과: 백그라운드 429 오류가 정상적으로 무시되었습니다. 실제 메시지는 전송하지 않았습니다.";
+                log("✅ 백그라운드 오류가 정상적으로 무시됨 (드라이런)");
+                return "테스트 통과: 백그라운드 429 오류를 무시했습니다. (본채팅 유휴 상태 기준)";
             } finally {
                 lastGenerationType = snapshot.lastGenerationType;
                 mainGenInFlight = snapshot.mainGenInFlight;
