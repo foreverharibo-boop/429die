@@ -696,22 +696,77 @@ function registerSlashCommands() {
             return;
         }
 
-        const handler = () => {
+        const badgeHandler = () => {
             showDemoBadge();
             return "429die 테스트 배지를 5초간 표시합니다.";
+        };
+
+        // 피치 위스퍼처럼 본채팅 밖에서 발생한 429 오류가 429die에 잡히는지
+        // 실제 메시지 전송 없이 확인하는 드라이런 테스트.
+        const backgroundErrorHandler = () => {
+            if (!settings.enabled) {
+                return "429die가 꺼져 있습니다. 확장을 켠 뒤 다시 실행해주세요.";
+            }
+            if (mainGenInFlight || retryState.active) {
+                return "현재 생성 또는 자동 재시도가 진행 중입니다. 끝난 뒤 다시 실행해주세요.";
+            }
+
+            const snapshot = {
+                lastGenerationType,
+                mainGenInFlight,
+                pendingError,
+                gotMessageThisGen,
+            };
+
+            try {
+                // 피치 위스퍼의 백그라운드 generateRaw를 본채팅 생성으로
+                // 잘못 인식한 상황만 재현한다. GENERATION_ENDED는 호출하지 않아
+                // scheduleRetry와 실제 /trigger가 절대 실행되지 않는다.
+                lastGenerationType = "normal";
+                mainGenInFlight = true;
+                pendingError = false;
+                gotMessageThisGen = false;
+
+                toastr.error(
+                    "429 Too Many Requests (강제 백그라운드 테스트)",
+                    "Peach Whisper 테스트",
+                );
+
+                const misclassified = pendingError && !gotMessageThisGen;
+                if (misclassified) {
+                    log("백그라운드 오류 오인 조건 재현됨 (드라이런, 실제 재시도 없음)");
+                    return "테스트 결과: 백그라운드 429 오류를 본채팅 오류로 오인하는 조건이 재현되었습니다. 실제 메시지는 전송하지 않았습니다.";
+                }
+
+                log("백그라운드 오류가 무시됨 (드라이런)");
+                return "테스트 결과: 백그라운드 429 오류가 정상적으로 무시되었습니다. 실제 메시지는 전송하지 않았습니다.";
+            } finally {
+                lastGenerationType = snapshot.lastGenerationType;
+                mainGenInFlight = snapshot.mainGenInFlight;
+                pendingError = snapshot.pendingError;
+                gotMessageThisGen = snapshot.gotMessageThisGen;
+            }
         };
 
         // 신형 API 우선, 없으면 구형 API로 대체
         if (ctx.SlashCommandParser && ctx.SlashCommand && ctx.SlashCommandParser.addCommandObject) {
             ctx.SlashCommandParser.addCommandObject(ctx.SlashCommand.fromProps({
                 name: "429test",
-                callback: handler,
+                callback: badgeHandler,
                 helpString: "429die 배지가 화면에 어떻게 뜨는지 테스트로 표시합니다.",
             }));
+            ctx.SlashCommandParser.addCommandObject(ctx.SlashCommand.fromProps({
+                name: "429bgtest",
+                callback: backgroundErrorHandler,
+                helpString: "피치 위스퍼 같은 백그라운드 429 오류 오인 여부를 실제 재시도 없이 테스트합니다.",
+            }));
             log("슬래시 커맨드 /429test 등록됨 (신형 API)");
+            log("슬래시 커맨드 /429bgtest 등록됨 (신형 API)");
         } else if (typeof ctx.registerSlashCommand === "function") {
-            ctx.registerSlashCommand("429test", handler, [], "429die 배지 테스트 표시", true, true);
+            ctx.registerSlashCommand("429test", badgeHandler, [], "429die 배지 테스트 표시", true, true);
+            ctx.registerSlashCommand("429bgtest", backgroundErrorHandler, [], "백그라운드 429 오류 오인 여부 드라이런 테스트", true, true);
             log("슬래시 커맨드 /429test 등록됨 (구형 API)");
+            log("슬래시 커맨드 /429bgtest 등록됨 (구형 API)");
         } else {
             log("슬래시 커맨드 API를 찾을 수 없음");
         }
