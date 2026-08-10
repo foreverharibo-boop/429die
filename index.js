@@ -92,6 +92,9 @@ const CONFIG = {
 let settings;
 let lastGenerationType = null;
 let mainGenInFlight = false; // 본 채팅 생성이 진행 중인지 (generateRaw 백그라운드 생성은 이 이벤트를 안 냄)
+let pendingError = false;    // 오류 토스트를 감지했고, 재시도 여부 판단 대기 중
+let gotMessageThisGen = false; // 이번 본 채팅 생성에서 정상 응답(MESSAGE_RECEIVED)을 받았는지
+let pendingErrorTimer = null;  // 오류 후 정상 응답이 오는지 확인하는 타이머
 let retryState = {
     active: false,
     count: 0,
@@ -315,6 +318,8 @@ function stopRetrying(reason) {
     retryState.manuallyStopped = true;
     retryState.suppressUntil = Date.now() + 3000;
     mainGenInFlight = false;
+    pendingError = false;
+    if (pendingErrorTimer) { clearTimeout(pendingErrorTimer); pendingErrorTimer = null; }
     // 진행 중인 ST 생성도 멈춘다 (안 그러면 이미 시작된 재생성이 끝까지 진행됨)
     stopSTGeneration();
     resetRetryState();
@@ -334,14 +339,6 @@ function scheduleRetry() {
         log("유저가 아직 아무 버튼도 누르지 않음, 재시도 스킵");
         return;
     }
-    // 본 채팅 생성이 진행 중이 아니면(= generateRaw 같은 백그라운드 생성의 오류면) 재시도 안 함.
-    // generateRaw는 GENERATION_STARTED를 발생시키지 않으므로 mainGenInFlight가 false로 남아있다.
-    if (!mainGenInFlight) {
-        log("본 채팅 생성이 진행 중이 아님(백그라운드 오류로 판단), 재시도 스킵");
-        return;
-    }
-    // 이번 시도는 여기서 처리했으므로 플래그를 내린다 (재시도가 새 생성을 시작하면 다시 켜짐)
-    mainGenInFlight = false;
 
     if (settings.maxRetries > 0 && retryState.count >= settings.maxRetries) {
         log(`최대 재시도 횟수(${settings.maxRetries}회) 도달`);
@@ -373,6 +370,8 @@ function retryLastAction() {
     // 우리가 시작하는 재시도 생성은 programmaticClick 때문에 onGenerationStarted에서
     // mainGenInFlight가 안 켜지므로, 여기서 직접 켜준다 (재시도 생성의 실패도 감지하기 위함).
     mainGenInFlight = true;
+    gotMessageThisGen = false;
+    pendingError = false;
 
     if (lastGenerationType === "swipe") {
         clickSwipeButton();
@@ -479,7 +478,16 @@ function hookToastr() {
             const combined = `${title || ""} ${message || ""}`;
             if (settings.enabled && matchesPattern(combined)) {
                 log("오류 패턴 감지:", combined);
-                scheduleRetry();
+                // 즉시 재시도하지 않는다. 이 오류가 본 채팅 생성에서 난 건지,
+                // 아니면 번역기/사이드채팅 등 백그라운드 확장에서 난 건지 아직 알 수 없다.
+                // 본 채팅 생성이 진행 중일 때만 대기 표시를 남기고, 실제 판단은
+                // 본 채팅 생성이 끝나는 GENERATION_ENDED 시점에 "정상 응답을 못 받았는가?"로 한다.
+                if (mainGenInFlight) {
+                    pendingError = true;
+                    log("오류 대기 표시 → 본 채팅 생성 종료 시 재시도 여부 판단");
+                } else {
+                    log("본 채팅 생성 진행 중 아님 → 백그라운드 오류로 보고 무시");
+                }
             }
         } catch (e) {
             console.error("[429die] 훅 오류:", e);
@@ -489,6 +497,11 @@ function hookToastr() {
 }
 
 function onMessageReceived() {
+    // 정상 응답을 받았음 → 이번 생성은 성공. 대기 중이던 오류(백그라운드 오류)는 무효화.
+    gotMessageThisGen = true;
+    pendingError = false;
+    if (pendingErrorTimer) { clearTimeout(pendingErrorTimer); pendingErrorTimer = null; }
+
     if (retryState.active) {
         log("생성 성공, 재시도 루프 종료");
         popup("success", "응답을 받았습니다. 자동 재시도를 종료합니다.");
@@ -497,6 +510,27 @@ function onMessageReceived() {
     // 성공했으니 다음 오류에 오작동하지 않도록 초기화
     lastGenerationType = null;
     mainGenInFlight = false;
+}
+
+function onGenerationEnded() {
+    // 본 채팅 생성이 끝났다. 이번 생성에서 정상 응답을 못 받았는데(gotMessageThisGen=false)
+    // 오류가 대기 중이면(pendingError) → 본 채팅 생성이 실패한 것으로 보고 재시도한다.
+    // 백그라운드 확장(번역기/사이드채팅)의 오류는 본 채팅 생성을 실패시키지 않으므로,
+    // 그 경우엔 정상 응답이 와서(onMessageReceived) gotMessageThisGen=true가 되어 재시도하지 않는다.
+    if (retryState.stoppingGeneration) return; // 우리가 멈춘 경우는 제외
+
+    const failed = pendingError && !gotMessageThisGen;
+    const wasPending = pendingError;
+    gotMessageThisGen = false;
+    pendingError = false;
+
+    if (failed) {
+        mainGenInFlight = false;
+        log("본 채팅 생성이 정상 응답 없이 종료됨 + 오류 대기 → 재시도");
+        scheduleRetry();
+    } else if (wasPending) {
+        log("오류가 있었으나 정상 응답을 받음(백그라운드 오류로 판단) → 재시도 안 함");
+    }
 }
 
 function onGenerationStopped() {
@@ -525,6 +559,8 @@ function onGenerationStarted(type) {
     retryState.suppressUntil = 0;
     lastGenerationType = (type === "swipe") ? "swipe" : "normal";
     mainGenInFlight = true;
+    gotMessageThisGen = false;
+    pendingError = false;
     log(`생성 시작 감지(type=${type}) → 타입: ${lastGenerationType}`);
 }
 
@@ -567,6 +603,9 @@ function bindEvents() {
         return;
     }
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+    if (event_types.GENERATION_ENDED) {
+        eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
+    }
     if (event_types.GENERATION_STOPPED) {
         eventSource.on(event_types.GENERATION_STOPPED, onGenerationStopped);
     }
