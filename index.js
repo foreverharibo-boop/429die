@@ -650,6 +650,7 @@ function addSettingsUI() {
                 </label>
                 <div class="die429-preview-wrap">
                     <input id="die429_preview" type="button" class="menu_button" value="배지 미리보기 (5초)">
+                    <input id="die429_bgtest" type="button" class="menu_button" value="백그라운드 오류 무시 테스트">
                 </div>
             </div>
         </div>
@@ -659,6 +660,15 @@ function addSettingsUI() {
 
     $("#die429_preview").on("click", function () {
         showDemoBadge();
+    });
+
+    $("#die429_bgtest").on("click", function () {
+        const result = runBackgroundErrorTest();
+        // 테스트 자체가 가짜 429 토스트를 띄우므로, 결과는 살짝 늦게 띄워 구분되게 함
+        setTimeout(() => {
+            if (result.ok) toastr.success(result.msg, "429die 테스트");
+            else toastr.warning(result.msg, "429die 테스트");
+        }, 600);
     });
 
     $("#die429_enabled").on("change", function () {
@@ -686,6 +696,57 @@ function addSettingsUI() {
     });
 }
 
+// 피치 위스퍼처럼 본채팅 밖에서 발생한 429 오류가 429die에 잡히는지
+// 실제 메시지 전송 없이 확인하는 드라이런 테스트.
+// 제보 상황과 동일하게: 본채팅이 유휴 상태(생성 안 도는 중)일 때
+// 백그라운드 확장의 429 토스트가 떠도 429die가 무시하는지 검증한다.
+function runBackgroundErrorTest() {
+    if (!settings.enabled) {
+        return { ok: false, msg: "429die가 꺼져 있습니다. 확장을 켠 뒤 다시 실행해주세요." };
+    }
+    if (mainGenInFlight || retryState.active) {
+        return { ok: false, msg: "현재 생성 또는 자동 재시도가 진행 중입니다. 끝난 뒤 다시 실행해주세요." };
+    }
+
+    const snapshot = {
+        lastGenerationType,
+        mainGenInFlight,
+        pendingError,
+        gotMessageThisGen,
+    };
+
+    try {
+        // 제보자 상황 재현: 본채팅 유휴 상태 + 백그라운드(peach) 429 토스트.
+        // 유휴 상태이므로 mainGenInFlight는 false 그대로 둔다.
+        // (peach의 generateRaw는 GENERATION_STARTED를 안 내므로 실제로도 false다)
+        lastGenerationType = "normal"; // 과거에 전송한 적 있는 상태 가정
+        mainGenInFlight = false;
+        pendingError = false;
+        gotMessageThisGen = false;
+
+        toastr.error(
+            "429 Too Many Requests (강제 백그라운드 테스트)",
+            "Peach Whisper 테스트",
+        );
+
+        // 올바른 동작: 유휴 상태의 백그라운드 오류는 무시되어야 하므로
+        // pendingError가 켜지지 않고 재시도도 시작되지 않아야 한다.
+        const misclassified = pendingError || retryState.active;
+        if (misclassified) {
+            log("❌ 백그라운드 오류를 본채팅 오류로 오인함 (드라이런, 실제 재시도 없음)");
+            return { ok: false, msg: "테스트 실패: 백그라운드 429 오류에 반응했습니다. 이 버전은 배포하면 안 됩니다." };
+        }
+
+        log("✅ 백그라운드 오류가 정상적으로 무시됨 (드라이런)");
+        return { ok: true, msg: "테스트 통과: 백그라운드 429 오류를 무시했습니다. (본채팅 유휴 상태 기준)" };
+    } finally {
+        lastGenerationType = snapshot.lastGenerationType;
+        mainGenInFlight = snapshot.mainGenInFlight;
+        pendingError = snapshot.pendingError;
+        gotMessageThisGen = snapshot.gotMessageThisGen;
+    }
+}
+
 function registerSlashCommands() {
     try {
         const ctx = (window.SillyTavern && window.SillyTavern.getContext)
@@ -702,55 +763,8 @@ function registerSlashCommands() {
         };
 
         // 피치 위스퍼처럼 본채팅 밖에서 발생한 429 오류가 429die에 잡히는지
-        // 실제 메시지 전송 없이 확인하는 드라이런 테스트.
-        // 제보 상황과 동일하게: 본채팅이 유휴 상태(생성 안 도는 중)일 때
-        // 백그라운드 확장의 429 토스트가 떠도 429die가 무시하는지 검증한다.
-        const backgroundErrorHandler = () => {
-            if (!settings.enabled) {
-                return "429die가 꺼져 있습니다. 확장을 켠 뒤 다시 실행해주세요.";
-            }
-            if (mainGenInFlight || retryState.active) {
-                return "현재 생성 또는 자동 재시도가 진행 중입니다. 끝난 뒤 다시 실행해주세요.";
-            }
-
-            const snapshot = {
-                lastGenerationType,
-                mainGenInFlight,
-                pendingError,
-                gotMessageThisGen,
-            };
-
-            try {
-                // 제보자 상황 재현: 본채팅 유휴 상태 + 백그라운드(peach) 429 토스트.
-                // 유휴 상태이므로 mainGenInFlight는 false 그대로 둔다.
-                // (peach의 generateRaw는 GENERATION_STARTED를 안 내므로 실제로도 false다)
-                lastGenerationType = "normal"; // 과거에 전송한 적 있는 상태 가정
-                mainGenInFlight = false;
-                pendingError = false;
-                gotMessageThisGen = false;
-
-                toastr.error(
-                    "429 Too Many Requests (강제 백그라운드 테스트)",
-                    "Peach Whisper 테스트",
-                );
-
-                // 올바른 동작: 유휴 상태의 백그라운드 오류는 무시되어야 하므로
-                // pendingError가 켜지지 않고 재시도도 시작되지 않아야 한다.
-                const misclassified = pendingError || retryState.active;
-                if (misclassified) {
-                    log("❌ 백그라운드 오류를 본채팅 오류로 오인함 (드라이런, 실제 재시도 없음)");
-                    return "테스트 실패: 백그라운드 429 오류에 반응했습니다. 이 버전은 배포하면 안 됩니다.";
-                }
-
-                log("✅ 백그라운드 오류가 정상적으로 무시됨 (드라이런)");
-                return "테스트 통과: 백그라운드 429 오류를 무시했습니다. (본채팅 유휴 상태 기준)";
-            } finally {
-                lastGenerationType = snapshot.lastGenerationType;
-                mainGenInFlight = snapshot.mainGenInFlight;
-                pendingError = snapshot.pendingError;
-                gotMessageThisGen = snapshot.gotMessageThisGen;
-            }
-        };
+        // 실제 메시지 전송 없이 확인하는 드라이런 테스트 (본체는 runBackgroundErrorTest).
+        const backgroundErrorHandler = () => runBackgroundErrorTest().msg;
 
         // 신형 API 우선, 없으면 구형 API로 대체
         if (ctx.SlashCommandParser && ctx.SlashCommand && ctx.SlashCommandParser.addCommandObject) {

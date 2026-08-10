@@ -50,3 +50,7 @@
     width: 100%;
     box-sizing: border-box;
 }
+
+.die429-preview-wrap .menu_button + .menu_button {
+    margin-top: 6px;
+}
