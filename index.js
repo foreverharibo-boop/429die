@@ -588,13 +588,24 @@ function onGenerationStopped(type) {
         log("추적 중인 본채팅 생성 없음 → 중단 이벤트 무시");
         return;
     }
+
+    // 주의: GENERATION_STOPPED는 사용자가 정지 버튼을 눌렀을 때뿐 아니라
+    // ST가 실패한 스와이프를 되돌리는 내부 뒷정리("Swipe failed, Swiping back")에서도
+    // 발생한다. 이 이벤트만으로는 둘을 구분할 수 없으므로 여기서는 재시도를
+    // 중단하지 않는다. 진짜 사용자 정지는 #mes_stop 실제 클릭(originalEvent 존재)을
+    // trackButtonClicks에서 감지해 처리한다.
     if (retryState.active) {
-        stopRetrying("생성이 수동으로 중단됨");
+        log("생성 중단 이벤트 감지 — 재시도 유지 (ST 내부 뒷정리일 수 있음)");
         return;
     }
 
     // 일반 본채팅의 수동 중단은 오류 재시도로 취급하지 않는다.
-    // 남은 오류·생성 상태를 모두 폐기해 이후 백그라운드 오류와 결합되지 않게 한다.
+    // 단, 이미 오류가 감지된 상태(pendingError)라면 이 STOPPED는 실패 뒷정리일
+    // 가능성이 높으므로 상태를 지우지 않고 GENERATION_ENDED의 판단에 맡긴다.
+    if (pendingError) {
+        log("생성 중단 이벤트 — 오류 감지 상태이므로 종료 판단은 ENDED에 위임");
+        return;
+    }
     clearMainGenerationState();
     log("본채팅 생성 중단 → 재시도 없이 추적 상태 정리");
 }
@@ -625,6 +636,18 @@ function trackButtonClicks() {
         e.preventDefault();
         e.stopPropagation();
         stopRetrying("사용자가 클릭하여 중단함");
+    });
+
+    // 정지 버튼(#mes_stop)을 "진짜 사용자"가 눌렀을 때만 재시도 중단.
+    // ST가 실패한 스와이프 뒷정리로 스스로 트리거하는 가짜 클릭(jQuery trigger)은
+    // originalEvent가 없으므로 여기서 걸러진다.
+    $(document).on("click", "#mes_stop", (e) => {
+        if (retryState.programmaticClick) return;      // 우리가 누른 정지는 무시
+        if (!e.originalEvent) return;                   // 코드가 만든 가짜 클릭은 무시
+        if (retryState.active) {
+            stopRetrying("사용자가 생성을 중단함");
+        }
+        clearMainGenerationState();
     });
 
     // 전송 버튼 클릭 감지 (사용자가 직접 누른 경우만)
