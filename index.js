@@ -444,23 +444,16 @@ function retryLastAction() {
 }
 
 function markRetryStartPending() {
+    // 마커는 소비되거나 재시도가 끝날 때(resetRetryState)까지 유지한다.
+    // 이전에 있던 20초 만료 타이머는 제거 — 무거운 채팅에선 슬래시 커맨드 실행 후
+    // 실제 생성 시작까지 30초 이상 걸릴 수 있어서, 만료 직후 도착한 진짜 재시도
+    // 생성을 사용자 전송으로 오인해 재시도를 죽이는 원인이 됐다.
     retryState.retryStartPending = true;
-    if (retryState.retryStartTimer) clearTimeout(retryState.retryStartTimer);
-    // 생성이 아예 시작되지 않는 비정상 상황 대비 안전망 (20초 뒤 자동 해제)
-    retryState.retryStartTimer = setTimeout(() => {
-        retryState.retryStartPending = false;
-        retryState.retryStartTimer = null;
-        log("재시도 생성 시작 대기 시간 만료");
-    }, 20000);
 }
 
 function consumeRetryStartMarker() {
     if (!retryState.retryStartPending) return false;
     retryState.retryStartPending = false;
-    if (retryState.retryStartTimer) {
-        clearTimeout(retryState.retryStartTimer);
-        retryState.retryStartTimer = null;
-    }
     return true;
 }
 
