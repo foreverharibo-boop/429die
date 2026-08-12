@@ -108,6 +108,8 @@ let retryState = {
     suppressUntil: 0,
     manuallyStopped: false,
     stoppingGeneration: false,
+    retryStartPending: false,
+    retryStartTimer: null,
 };
 
 const LOG_BUFFER_MAX = 300;
@@ -295,6 +297,11 @@ function resetRetryState() {
         clearTimeout(retryState.timer);
         retryState.timer = null;
     }
+    retryState.retryStartPending = false;
+    if (retryState.retryStartTimer) {
+        clearTimeout(retryState.retryStartTimer);
+        retryState.retryStartTimer = null;
+    }
     updateIndicator();
 }
 
@@ -423,11 +430,38 @@ function retryLastAction() {
     // mainGenInFlight가 안 켜지므로, 여기서 직접 켜준다 (재시도 생성의 실패도 감지하기 위함).
     beginMainGeneration(lastGenerationType);
 
+    // "곧 시작될 생성은 내 재시도"라는 마커.
+    // QR 큐잉·슬래시 커맨드 지연·무거운 채팅 때문에 생성 시작(GENERATION_STARTED)이
+    // programmaticClick 800ms 창을 넘겨 도착하면, 그걸 사용자 전송으로 착각해
+    // 재시도를 스스로 죽이는 문제가 있었다. 시간이 아니라 마커 소비로 판별한다.
+    markRetryStartPending();
+
     if (lastGenerationType === "swipe") {
         clickSwipeButton();
     } else {
         clickSendButton();
     }
+}
+
+function markRetryStartPending() {
+    retryState.retryStartPending = true;
+    if (retryState.retryStartTimer) clearTimeout(retryState.retryStartTimer);
+    // 생성이 아예 시작되지 않는 비정상 상황 대비 안전망 (20초 뒤 자동 해제)
+    retryState.retryStartTimer = setTimeout(() => {
+        retryState.retryStartPending = false;
+        retryState.retryStartTimer = null;
+        log("재시도 생성 시작 대기 시간 만료");
+    }, 20000);
+}
+
+function consumeRetryStartMarker() {
+    if (!retryState.retryStartPending) return false;
+    retryState.retryStartPending = false;
+    if (retryState.retryStartTimer) {
+        clearTimeout(retryState.retryStartTimer);
+        retryState.retryStartTimer = null;
+    }
+    return true;
 }
 
 function clickSwipeButton() {
@@ -637,6 +671,13 @@ function onGenerationStarted(type, params, dryRun) {
     // "사용자가 새로 전송함"으로 착각해 재시도를 죽이게 된다.
     if (dryRun) {
         log(`드라이런 생성 감지(type=${type}) → 무시`);
+        return;
+    }
+    // 이 생성이 방금 우리가 시작한 재시도라면 사용자 액션으로 취급하지 않는다.
+    // programmaticClick 가드보다 먼저 소비해야, 빨리 도착하든(800ms 이내)
+    // QR 큐잉·슬래시 커맨드 지연으로 늦게 도착하든 마커가 항상 정리된다.
+    if (retryState.active && consumeRetryStartMarker()) {
+        log(`자동 재시도로 시작된 생성 확인(type=${type}) → 재시도 유지`);
         return;
     }
     // 우리가 재시도용으로 스스로 트리거한 생성이면 무시 (무한루프 방지)
