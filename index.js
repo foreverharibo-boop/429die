@@ -108,46 +108,22 @@ let retryState = {
     suppressUntil: 0,
     manuallyStopped: false,
     stoppingGeneration: false,
-    autoStartPending: false,
-    autoStartTimer: null,
 };
+
+const LOG_BUFFER_MAX = 300;
+const logBuffer = [];
 
 function log(...args) {
     console.log("[429die]", ...args);
-}
-
-function isPeachWhisperGenerating() {
-    // Peach Whisper 원본은 요청 중 로딩 버블을 표시하고 전송 버튼을 disabled로 둔다.
-    // 원본 확장을 수정하지 않고 이 DOM 상태만 읽어서 백그라운드 요청을 구별한다.
-    const hasLoadingBubble = Boolean(document.querySelector('[id^="pw_loading_"]'));
-    const hasDisabledSendButton = Array.from(document.querySelectorAll('.pw_send_btn'))
-        .some((button) => button.disabled || button.getAttribute('aria-disabled') === 'true');
-    return hasLoadingBubble || hasDisabledSendButton;
-}
-
-function clearAutomaticStartMarker() {
-    retryState.autoStartPending = false;
-    if (retryState.autoStartTimer) {
-        clearTimeout(retryState.autoStartTimer);
-        retryState.autoStartTimer = null;
-    }
-}
-
-function markAutomaticStartPending() {
-    clearAutomaticStartMarker();
-    retryState.autoStartPending = true;
-    // 슬래시 커맨드 처리가 느려져도 800ms만으로 자동/수동을 판별하지 않는다.
-    retryState.autoStartTimer = setTimeout(() => {
-        retryState.autoStartPending = false;
-        retryState.autoStartTimer = null;
-        log("자동 재시도 시작 이벤트 대기 시간 만료");
-    }, 15000);
-}
-
-function consumeAutomaticStartMarker() {
-    if (!retryState.autoStartPending) return false;
-    clearAutomaticStartMarker();
-    return true;
+    try {
+        const time = new Date().toLocaleTimeString("ko-KR", { hour12: false });
+        const line = `[${time}] ` + args.map((a) => {
+            if (typeof a === "string") return a;
+            try { return JSON.stringify(a); } catch { return String(a); }
+        }).join(" ");
+        logBuffer.push(line);
+        if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
+    } catch { /* 로그 기록 실패는 무시 */ }
 }
 
 function popup(type, message) {
@@ -319,7 +295,6 @@ function resetRetryState() {
         clearTimeout(retryState.timer);
         retryState.timer = null;
     }
-    clearAutomaticStartMarker();
     updateIndicator();
 }
 
@@ -356,22 +331,21 @@ function stopSTGeneration() {
     // 우리가 stopGeneration을 부르면 GENERATION_STOPPED 이벤트가 발생하는데,
     // 그 이벤트를 onGenerationStopped가 다시 받아 무한루프가 되므로 플래그로 차단
     retryState.stoppingGeneration = true;
+    let usedApi = false;
     try {
         const ctx = (window.SillyTavern && window.SillyTavern.getContext)
             ? window.SillyTavern.getContext()
             : null;
         if (ctx && typeof ctx.stopGeneration === "function") {
             ctx.stopGeneration();
+            usedApi = true;
         }
     } catch (e) {
         console.error("[429die] stopGeneration 호출 실패:", e);
     }
     // context API를 썼다면 정지 버튼까지 다시 누르지 않는다.
     // 두 경로를 연속 실행하면 같은 생성을 중복 취소하게 된다.
-    const ctx = (window.SillyTavern && window.SillyTavern.getContext)
-        ? window.SillyTavern.getContext()
-        : null;
-    if (!ctx || typeof ctx.stopGeneration !== "function") {
+    if (!usedApi) {
         const $stop = $("#mes_stop");
         if ($stop.length && $stop.is(":visible")) {
             retryState.programmaticClick = true;
@@ -396,8 +370,9 @@ function stopRetrying(reason, { stopGeneration = false } = {}) {
     retryState.manuallyStopped = true;
     retryState.suppressUntil = Date.now() + 3000;
     clearMainGenerationState();
-    // 실제 정지는 배지의 X처럼 사용자가 명시적으로 중단했을 때만 실행한다.
-    // 이미 도착한 GENERATION_STOPPED 이벤트에서 다시 취소하면 정상 재전송까지 끊긴다.
+    // 진행 중인 ST 생성 정지는 요청된 경우에만 실행한다.
+    // 예: 배지 ✕ 클릭은 재시도로 시작된 생성까지 끊어야 하지만,
+    // "사용자가 새로 전송함" 같은 경우엔 방금 시작된 새 생성을 끊으면 안 된다.
     if (stopGeneration) stopSTGeneration();
     resetRetryState();
 }
@@ -447,7 +422,6 @@ function retryLastAction() {
     // 우리가 시작하는 재시도 생성은 programmaticClick 때문에 onGenerationStarted에서
     // mainGenInFlight가 안 켜지므로, 여기서 직접 켜준다 (재시도 생성의 실패도 감지하기 위함).
     beginMainGeneration(lastGenerationType);
-    markAutomaticStartPending();
 
     if (lastGenerationType === "swipe") {
         clickSwipeButton();
@@ -554,10 +528,6 @@ function hookToastr() {
             const combined = `${title || ""} ${message || ""}`;
             if (settings.enabled && matchesPattern(combined)) {
                 log("오류 패턴 감지:", combined);
-                if (isPeachWhisperGenerating()) {
-                    log("Peach Whisper 백그라운드 요청 중 발생한 오류 → 본채팅 재시도에서 제외");
-                    return originalError(message, title, options);
-                }
                 // 즉시 재시도하지 않는다. 이 오류가 본 채팅 생성에서 난 건지,
                 // 아니면 번역기/사이드채팅 등 백그라운드 확장에서 난 건지 아직 알 수 없다.
                 // 본 채팅 생성이 진행 중일 때만 대기 표시를 남기고, 실제 판단은
@@ -598,10 +568,6 @@ function onGenerationEnded(type) {
     // 백그라운드 확장(번역기/사이드채팅)의 오류는 본 채팅 생성을 실패시키지 않으므로,
     // 그 경우엔 정상 응답이 와서(onMessageReceived) gotMessageThisGen=true가 되어 재시도하지 않는다.
     if (retryState.stoppingGeneration) return; // 우리가 멈춘 경우는 제외
-    if (isPeachWhisperGenerating()) {
-        log("Peach Whisper 백그라운드 생성 종료 이벤트 → 무시");
-        return;
-    }
     if (type === "quiet") return; // 백그라운드 quiet 생성 종료는 본채팅 상태와 무관
     if (!mainGenInFlight || activeMainGenerationSerial === null) {
         log("추적 중인 본채팅 생성 없음 → 종료 이벤트 무시");
@@ -637,38 +603,40 @@ function onGenerationEnded(type) {
 function onGenerationStopped(type) {
     // 우리가 유발한 정지 이벤트면 무시 (무한루프 방지)
     if (retryState.stoppingGeneration) return;
-    if (isPeachWhisperGenerating()) {
-        log("Peach Whisper 백그라운드 생성 중단 이벤트 → 무시");
-        return;
-    }
     if (type === "quiet") return;
     if (!mainGenInFlight || activeMainGenerationSerial === null) {
         log("추적 중인 본채팅 생성 없음 → 중단 이벤트 무시");
         return;
     }
+
+    // 주의: GENERATION_STOPPED는 사용자가 정지 버튼을 눌렀을 때뿐 아니라
+    // ST가 실패한 스와이프를 되돌리는 내부 뒷정리("Swipe failed, Swiping back")에서도
+    // 발생한다. 이 이벤트만으로는 둘을 구분할 수 없으므로 여기서는 재시도를
+    // 중단하지 않는다. 진짜 사용자 정지는 #mes_stop 실제 클릭(originalEvent 존재)을
+    // trackButtonClicks에서 감지해 처리한다.
     if (retryState.active) {
-        if (retryState.programmaticClick || retryState.autoStartPending) {
-            log("자동 재시도 전환 중 발생한 중단 이벤트 → 사용자 취소로 처리하지 않음");
-            return;
-        }
-        stopRetrying("생성이 중단됨", { stopGeneration: false });
+        log("생성 중단 이벤트 감지 — 재시도 유지 (ST 내부 뒷정리일 수 있음)");
         return;
     }
 
     // 일반 본채팅의 수동 중단은 오류 재시도로 취급하지 않는다.
-    // 남은 오류·생성 상태를 모두 폐기해 이후 백그라운드 오류와 결합되지 않게 한다.
+    // 단, 이미 오류가 감지된 상태(pendingError)라면 이 STOPPED는 실패 뒷정리일
+    // 가능성이 높으므로 상태를 지우지 않고 GENERATION_ENDED의 판단에 맡긴다.
+    if (pendingError) {
+        log("생성 중단 이벤트 — 오류 감지 상태이므로 종료 판단은 ENDED에 위임");
+        return;
+    }
     clearMainGenerationState();
     log("본채팅 생성 중단 → 재시도 없이 추적 상태 정리");
 }
 
-function onGenerationStarted(type) {
-    if (isPeachWhisperGenerating()) {
-        log(`Peach Whisper 백그라운드 생성 시작 감지(type=${type}) → 본채팅 추적에서 제외`);
-        return;
-    }
-    // 자동 재시도가 늦게 시작돼도 사용자 액션으로 오인하지 않는다.
-    if (retryState.active && consumeAutomaticStartMarker()) {
-        log(`자동 재시도 생성 시작 확인(type=${type})`);
+function onGenerationStarted(type, params, dryRun) {
+    // 드라이런(토큰 계산·프롬프트 재계산용 가짜 생성)은 실제 생성이 아님.
+    // ST는 GENERATION_STARTED의 세 번째 인자로 dryRun 여부를 넘겨준다.
+    // 이걸 무시하면 재시도 대기 중에 드라이런이 끼어들 때마다
+    // "사용자가 새로 전송함"으로 착각해 재시도를 죽이게 된다.
+    if (dryRun) {
+        log(`드라이런 생성 감지(type=${type}) → 무시`);
         return;
     }
     // 우리가 재시도용으로 스스로 트리거한 생성이면 무시 (무한루프 방지)
@@ -682,10 +650,7 @@ function onGenerationStarted(type) {
     // 버튼 클릭이든, 빠른답장(QR)/슬래시 커맨드든 어떤 경로로 본 채팅 생성이 시작됐든
     // 여기서 잡아준다. generateRaw 백그라운드 생성은 이 이벤트를 안 내므로 안전.
     if (retryState.active) {
-        stopRetrying(
-            type === "swipe" ? "사용자가 새로 스와이프함" : "사용자가 새로 전송함",
-            { stopGeneration: false },
-        );
+        stopRetrying(type === "swipe" ? "사용자가 새로 스와이프함" : "사용자가 새로 전송함");
     }
     retryState.manuallyStopped = false; // 사용자의 진짜 새 액션 → 래치 해제
     retryState.suppressUntil = 0;
@@ -701,12 +666,24 @@ function trackButtonClicks() {
         stopRetrying("사용자가 클릭하여 중단함", { stopGeneration: true });
     });
 
+    // 정지 버튼(#mes_stop)을 "진짜 사용자"가 눌렀을 때만 재시도 중단.
+    // ST가 실패한 스와이프 뒷정리로 스스로 트리거하는 가짜 클릭(jQuery trigger)은
+    // originalEvent가 없으므로 여기서 걸러진다.
+    $(document).on("click", "#mes_stop", (e) => {
+        if (retryState.programmaticClick) return;      // 우리가 누른 정지는 무시
+        if (!e.originalEvent) return;                   // 코드가 만든 가짜 클릭은 무시
+        if (retryState.active) {
+            stopRetrying("사용자가 생성을 중단함");
+        }
+        clearMainGenerationState();
+    });
+
     // 전송 버튼 클릭 감지 (사용자가 직접 누른 경우만)
     $(document).on("click", "#send_but", () => {
-        if (retryState.programmaticClick || retryState.autoStartPending) return; // 자동 재시도 클릭은 무시
+        if (retryState.programmaticClick) return; // 자동 재시도 클릭은 무시
         // 중단 직후 쿨다운 창 안의 클릭은 ST의 자동 동작일 수 있어 무시
         if (retryState.manuallyStopped && Date.now() < retryState.suppressUntil) return;
-        if (retryState.active) stopRetrying("사용자가 새로 전송함", { stopGeneration: false });
+        if (retryState.active) stopRetrying("사용자가 새로 전송함");
         retryState.manuallyStopped = false; // 사용자의 진짜 새 액션 → 래치 해제
         retryState.suppressUntil = 0;
         lastGenerationType = "normal";
@@ -715,10 +692,10 @@ function trackButtonClicks() {
 
     // 스와이프 버튼 클릭 감지 (동적 요소라 delegation 사용)
     $(document).on("click", ".swipe_right", () => {
-        if (retryState.programmaticClick || retryState.autoStartPending) return; // 자동 재시도 클릭은 무시
+        if (retryState.programmaticClick) return; // 자동 재시도 클릭은 무시
         // 중단 직후 쿨다운 창 안의 클릭은 ST의 자동 스와이프 되돌리기일 수 있어 무시
         if (retryState.manuallyStopped && Date.now() < retryState.suppressUntil) return;
-        if (retryState.active) stopRetrying("사용자가 새로 스와이프함", { stopGeneration: false });
+        if (retryState.active) stopRetrying("사용자가 새로 스와이프함");
         retryState.manuallyStopped = false; // 사용자의 진짜 새 액션 → 래치 해제
         retryState.suppressUntil = 0;
         lastGenerationType = "swipe";
@@ -780,12 +757,68 @@ function addSettingsUI() {
                 <div class="die429-preview-wrap">
                     <input id="die429_preview" type="button" class="menu_button" value="배지 미리보기 (5초)">
                     <input id="die429_bgtest" type="button" class="menu_button" value="백그라운드 오류 무시 테스트">
+                    <input id="die429_logbtn" type="button" class="menu_button" value="로그 보기">
+                </div>
+                <div id="die429_logwrap" style="display:none;">
+                    <textarea id="die429_logview" class="text_pole" rows="10" readonly
+                        style="font-size:11px; font-family:monospace; white-space:pre; overflow:auto;"></textarea>
+                    <div class="die429-preview-wrap" style="margin-top:6px;">
+                        <input id="die429_logcopy" type="button" class="menu_button" value="로그 복사">
+                        <input id="die429_logrefresh" type="button" class="menu_button" value="새로고침">
+                        <input id="die429_logclear" type="button" class="menu_button" value="지우기">
+                    </div>
                 </div>
             </div>
         </div>
     </div>`;
 
     $("#extensions_settings").append(html);
+
+    function renderLogView() {
+        const text = logBuffer.length ? logBuffer.join("\n") : "(아직 기록된 로그가 없습니다)";
+        const $view = $("#die429_logview");
+        $view.val(text);
+        // 항상 맨 아래(최신 로그)로 스크롤
+        const el = $view[0];
+        if (el) el.scrollTop = el.scrollHeight;
+    }
+
+    $("#die429_logbtn").on("click", function () {
+        const $wrap = $("#die429_logwrap");
+        const opening = $wrap.is(":hidden");
+        $wrap.toggle();
+        $(this).val(opening ? "로그 닫기" : "로그 보기");
+        if (opening) renderLogView();
+    });
+
+    $("#die429_logrefresh").on("click", renderLogView);
+
+    $("#die429_logclear").on("click", function () {
+        logBuffer.length = 0;
+        renderLogView();
+    });
+
+    $("#die429_logcopy").on("click", function () {
+        const text = logBuffer.join("\n");
+        const done = () => toastr.success("로그가 클립보드에 복사되었습니다.", "429die");
+        const fail = () => {
+            // 클립보드 API 실패 시 textarea 선택 방식으로 대체
+            const el = $("#die429_logview")[0];
+            if (el) {
+                el.removeAttribute("readonly");
+                el.select();
+                el.setSelectionRange(0, text.length);
+                try { document.execCommand("copy"); done(); }
+                catch { toastr.warning("복사 실패 — 텍스트를 길게 눌러 직접 복사해주세요.", "429die"); }
+                el.setAttribute("readonly", "readonly");
+            }
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(fail);
+        } else {
+            fail();
+        }
+    });
 
     $("#die429_preview").on("click", function () {
         showDemoBadge();
@@ -802,7 +835,7 @@ function addSettingsUI() {
 
     $("#die429_enabled").on("change", function () {
         settings.enabled = $(this).is(":checked");
-        if (!settings.enabled) stopRetrying("비활성화됨");
+        if (!settings.enabled) stopRetrying("비활성화됨", { stopGeneration: true });
         saveSettingsDebounced();
     });
     $("#die429_mode").on("change", function () {
