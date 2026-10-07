@@ -2,6 +2,7 @@ import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced, eventSource, event_types } from "../../../../script.js";
 
 const EXT_ID = "429die";
+const VERSION = "1.9.10";
 
 // 켜고 끄는 것 외에는 UI로 노출하지 않는 고정값
 const CONFIG = {
@@ -112,19 +113,201 @@ let retryState = {
     retryStartTimer: null,
 };
 
-const LOG_BUFFER_MAX = 300;
+// Diagnostics only: never use these observations to trigger or cancel a retry.
+const LOG_BUFFER_MAX = 1000;
+const LOG_CHAR_MAX = 350000;
+const LOG_STORAGE_KEY = "429die.diagnostics.v1";
 const logBuffer = [];
+let logChars = 0;
+let persistLogTimer = null;
+let storageAvailable = true;
+const diagnosticSession = Date.now().toString(36);
+let generationStartedAt = 0;
+let lastClosedGeneration = null;
+let requestSerial = 0;
+const observedRequests = new Map();
+let diagnosticFetch = null;
+let diagnosticToastr = null;
+
+function trimLogs() {
+    while (logBuffer.length > LOG_BUFFER_MAX || logChars > LOG_CHAR_MAX) {
+        logChars -= logBuffer.shift().length;
+    }
+}
+
+function persistLogs() {
+    if (persistLogTimer !== null) clearTimeout(persistLogTimer);
+    persistLogTimer = null;
+    try {
+        sessionStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(logBuffer));
+        storageAvailable = true;
+    } catch { storageAvailable = false; }
+}
+
+function restoreLogs() {
+    try {
+        const saved = sessionStorage.getItem(LOG_STORAGE_KEY);
+        if (!saved || saved.length > LOG_CHAR_MAX * 2) return;
+        const lines = JSON.parse(saved);
+        if (!Array.isArray(lines)) return;
+        logBuffer.push(...lines.filter(line => typeof line === "string")
+            .slice(-LOG_BUFFER_MAX).map(line => line.slice(0, 4000)));
+        logChars = logBuffer.reduce((sum, line) => sum + line.length, 0);
+        trimLogs();
+    } catch { storageAvailable = false; }
+}
+
+// Record script locations only, never stack messages, hosts, query strings,
+// event objects, prompts, API keys, request/response bodies or chat names.
+function diagnosticSources() {
+    try {
+        const stack = new Error().stack || "";
+        const sources = [];
+        for (const line of stack.split("\n").slice(1)) {
+            const match = line.match(/(?:https?:\/\/[^/\s)]+)?\/(?:scripts\/[^\s)?:#]+|script\.js)(?:\?[^\s):]*)?(?::\d+){1,2}/);
+            if (!match) continue;
+            const path = match[0].replace(/^https?:\/\/[^/]+/, "")
+                .replace(/\?[^:)]*/, "").slice(0, 240);
+            if (/\/429die\//i.test(path)) continue;
+            if (!sources.includes(path)) sources.push(path);
+            if (sources.length >= 6) break;
+        }
+        return sources.length ? sources : ["호출 경로 확인 불가"];
+    } catch { return ["호출 경로 확인 불가"]; }
+}
+
+function diagnosticArg(value) {
+    if (value === undefined) return "undefined";
+    if (value === null) return "null";
+    if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))) return value;
+    if (typeof value === "string") {
+        return ["normal", "swipe", "quiet", "regenerate", "continue", "impersonate"].includes(value)
+            ? value : "string(redacted)";
+    }
+    return Array.isArray(value) ? "array(redacted)" : `${typeof value}(redacted)`;
+}
+
+function diagnosticState() {
+    const now = Date.now();
+    return {
+        session: diagnosticSession,
+        generation: activeMainGenerationSerial,
+        lastGeneration: mainGenerationSerial,
+        type: diagnosticArg(lastGenerationType),
+        inFlight: mainGenInFlight,
+        elapsedMs: generationStartedAt ? now - generationStartedAt : null,
+        gotMessage: gotMessageThisGen,
+        pendingError,
+        errorGeneration: pendingErrorGenerationSerial,
+        errorAgeMs: pendingErrorAt ? now - pendingErrorAt : null,
+        lastClosed: lastClosedGeneration ? {
+            ...lastClosedGeneration, sinceCloseMs: now - lastClosedGeneration.at,
+        } : null,
+        retryActive: retryState.active,
+        retryCount: retryState.count,
+        manuallyStopped: retryState.manuallyStopped,
+        stoppingGeneration: retryState.stoppingGeneration,
+        programmaticClick: retryState.programmaticClick,
+        retryStartPending: retryState.retryStartPending,
+        cooldownMs: Math.max(0, retryState.suppressUntil - now),
+        enabled: !!settings?.enabled,
+        mode: settings?.catchMode === "all" ? "all" : "safe",
+        requests: [...observedRequests.keys()].slice(-12),
+        fetchHookCurrent: window.fetch === diagnosticFetch,
+        toastHookCurrent: toastr.error === diagnosticToastr,
+    };
+}
+
+function diagnosticEvent(name, args = [], withSource = true) {
+    try {
+        log(`[진단] ${name}`, {
+            args: Array.from(args).map(diagnosticArg),
+            ...diagnosticState(),
+            ...(withSource ? { sources: diagnosticSources() } : {}),
+        });
+    } catch { /* Diagnostics must never affect generation. */ }
+}
+
+function diagnosticErrorInfo(message) {
+    const lower = String(message || "").toLowerCase();
+    return {
+        patterns: CONFIG.patterns.filter(pattern => lower.includes(pattern)),
+        excluded: CONFIG.excludePatterns.filter(pattern => lower.includes(pattern)),
+    };
+}
+
+function diagnosticReport() {
+    diagnosticEvent("로그 내보내기", [], false);
+    persistLogs();
+    return `429die v${VERSION} 진단 로그\n`
+        + `저장: ${storageAvailable ? "같은 탭 새로고침 후 유지" : "저장 불가: 현재 메모리에만 보관"}\n`
+        + "요청 번호는 관찰용입니다. 같은 시간대라는 이유만으로 본채팅 요청으로 확정하지 않습니다.\n"
+        + "HTTP 응답은 헤더 수신 시점입니다. 스트리밍 완료나 모델 응답 성공을 뜻하지 않습니다.\n"
+        + "호출 경로는 보이는 스크립트 위치이며 비동기 경계/다른 래퍼 뒤의 원인은 누락될 수 있습니다.\n\n"
+        + logBuffer.join("\n");
+}
+
+function hookDiagnosticFetch() {
+    const previousFetch = window.fetch;
+    if (typeof previousFetch !== "function") return;
+    diagnosticFetch = function (input, init) {
+        let observation = null;
+        try {
+            const rawUrl = typeof input === "string" ? input
+                : input instanceof URL ? input.href : input?.url;
+            if (typeof rawUrl === "string") {
+                const url = new URL(rawUrl, window.location.href);
+                const endpoints = ["/api/backends/chat-completions/generate", "/api/backends/text-completions/generate"];
+                if (url.origin === window.location.origin && endpoints.includes(url.pathname) && observedRequests.size < 100) {
+                    observation = {
+                        request: ++requestSerial,
+                        endpoint: url.pathname,
+                        observedGeneration: activeMainGenerationSerial,
+                        startedAt: Date.now(),
+                    };
+                    observedRequests.set(observation.request, observation);
+                    log("[진단] 요청 시작(귀속 미확정)", { ...observation, ...diagnosticState(), sources: diagnosticSources() });
+                }
+            }
+        } catch { /* Ignore diagnostics errors. */ }
+        const finish = (response, failed) => {
+            try {
+                if (!observation) return;
+                observedRequests.delete(observation.request);
+                log(failed ? "[진단] 요청 예외" : "[진단] HTTP 응답 헤더 수신", {
+                    ...observation,
+                    durationMs: Date.now() - observation.startedAt,
+                    // Do not read bodies, headers, error messages or mutate the response.
+                    httpStatus: failed ? null : response?.status,
+                    ...diagnosticState(),
+                });
+            } catch { /* Preserve the original result even if logging fails. */ }
+        };
+        let result;
+        try { result = Reflect.apply(previousFetch, this, arguments); }
+        catch (error) { finish(null, true); throw error; }
+        if (observation) {
+            try { result.then(response => finish(response, false), () => finish(null, true)); }
+            catch { /* Non-standard fetch wrapper: preserve its original return value. */ }
+        }
+        return result; // The exact original promise and response remain owned by ST.
+    };
+    window.fetch = diagnosticFetch;
+}
 
 function log(...args) {
-    console.log("[429die]", ...args);
     try {
-        const time = new Date().toLocaleTimeString("ko-KR", { hour12: false });
+        console.log("[429die]", ...args);
+        const time = new Date().toISOString();
         const line = `[${time}] ` + args.map((a) => {
             if (typeof a === "string") return a;
             try { return JSON.stringify(a); } catch { return String(a); }
         }).join(" ");
-        logBuffer.push(line);
-        if (logBuffer.length > LOG_BUFFER_MAX) logBuffer.shift();
+        const boundedLine = line.slice(0, 4000);
+        logBuffer.push(boundedLine);
+        logChars += boundedLine.length;
+        trimLogs();
+        if (persistLogTimer === null) persistLogTimer = setTimeout(persistLogs, 250);
     } catch { /* 로그 기록 실패는 무시 */ }
 }
 
@@ -164,7 +347,7 @@ function matchesPattern(message) {
     if (!message) return false;
     const lower = String(message).toLowerCase();
     if (CONFIG.excludePatterns.some((p) => p && lower.includes(p.toLowerCase()))) {
-        log("제외 패턴에 해당하는 오류, 재시도 안 함:", lower);
+        log("제외 패턴에 해당하는 오류, 재시도 안 함:", diagnosticErrorInfo(lower));
         return false;
     }
     return CONFIG.patterns.some((p) => p && lower.includes(p.toLowerCase()));
@@ -322,9 +505,20 @@ function beginMainGeneration(type) {
     mainGenInFlight = true;
     gotMessageThisGen = false;
     clearPendingErrorState();
+    generationStartedAt = Date.now();
+    diagnosticEvent("본채팅 추적 시작", [type]);
 }
 
-function clearMainGenerationState({ preserveLastType = false } = {}) {
+function clearMainGenerationState({ preserveLastType = false, reason = "unspecified" } = {}) {
+    diagnosticEvent(`추적 정리 직전: ${reason}`);
+    if (activeMainGenerationSerial !== null) {
+        lastClosedGeneration = {
+            generation: activeMainGenerationSerial, at: Date.now(), reason,
+            elapsedMs: generationStartedAt ? Date.now() - generationStartedAt : null,
+            gotMessage: gotMessageThisGen, pendingError,
+        };
+    }
+    generationStartedAt = 0;
     mainGenInFlight = false;
     activeMainGenerationSerial = null;
     gotMessageThisGen = false;
@@ -376,7 +570,7 @@ function stopRetrying(reason, { stopGeneration = false } = {}) {
     // ST의 자동 스와이프 되돌리기 등으로 재시도가 되살아나지 않게 완전 차단
     retryState.manuallyStopped = true;
     retryState.suppressUntil = Date.now() + 3000;
-    clearMainGenerationState();
+    clearMainGenerationState({ reason: "stopRetrying" });
     // 진행 중인 ST 생성 정지는 요청된 경우에만 실행한다.
     // 예: 배지 ✕ 클릭은 재시도로 시작된 생성까지 끊어야 하지만,
     // "사용자가 새로 전송함" 같은 경우엔 방금 시작된 새 생성을 끊으면 안 된다.
@@ -385,6 +579,7 @@ function stopRetrying(reason, { stopGeneration = false } = {}) {
 }
 
 function scheduleRetry() {
+    diagnosticEvent("재시도 예약 판단", [], false);
     if (!settings.enabled) return;
     if (retryState.manuallyStopped) {
         log("사용자가 중단함, 새 액션 전까지 재시도 안 함");
@@ -424,6 +619,7 @@ function scheduleRetry() {
 }
 
 function retryLastAction() {
+    diagnosticEvent("재시도 실행 판단", [], false);
     if (!retryState.active) return;
 
     // 우리가 시작하는 재시도 생성은 programmaticClick 때문에 onGenerationStarted에서
@@ -553,8 +749,10 @@ function hookToastr() {
     toastr.error = function (message, title, options) {
         try {
             const combined = `${title || ""} ${message || ""}`;
-            if (settings.enabled && matchesPattern(combined)) {
-                log("오류 패턴 감지:", combined);
+            const matched = settings.enabled && matchesPattern(combined);
+            log("[진단] 오류 토스트", { matched, ...diagnosticErrorInfo(combined), ...diagnosticState(), sources: diagnosticSources() });
+            if (matched) {
+                log("오류 패턴 감지:", diagnosticErrorInfo(combined));
                 // 즉시 재시도하지 않는다. 이 오류가 본 채팅 생성에서 난 건지,
                 // 아니면 번역기/사이드채팅 등 백그라운드 확장에서 난 건지 아직 알 수 없다.
                 // 본 채팅 생성이 진행 중일 때만 대기 표시를 남기고, 실제 판단은
@@ -573,9 +771,11 @@ function hookToastr() {
         }
         return originalError(message, title, options);
     };
+    diagnosticToastr = toastr.error;
 }
 
 function onMessageReceived() {
+    diagnosticEvent("MESSAGE_RECEIVED 수신", arguments);
     // 정상 응답을 받았음 → 이번 생성은 성공. 대기 중이던 오류(백그라운드 오류)는 무효화.
     gotMessageThisGen = true;
     clearPendingErrorState();
@@ -586,10 +786,11 @@ function onMessageReceived() {
         resetRetryState();
     }
     // 성공했으니 다음 오류에 오작동하지 않도록 본채팅 생성 상태 전체 초기화
-    clearMainGenerationState();
+    clearMainGenerationState({ reason: "MESSAGE_RECEIVED" });
 }
 
 function onGenerationEnded(type) {
+    diagnosticEvent("GENERATION_ENDED 수신", arguments);
     // 본 채팅 생성이 끝났다. 이번 생성에서 정상 응답을 못 받았는데(gotMessageThisGen=false)
     // 오류가 대기 중이면(pendingError) → 본 채팅 생성이 실패한 것으로 보고 재시도한다.
     // 백그라운드 확장(번역기/사이드채팅)의 오류는 본 채팅 생성을 실패시키지 않으므로,
@@ -611,10 +812,11 @@ function onGenerationEnded(type) {
     const failed = errorBelongsToThisGeneration && !gotMessageThisGen;
     const wasPending = pendingError;
     const retryType = lastGenerationType;
+    log("[진단] 종료 판정", { failed, errorBelongsToThisGeneration, errorAgeMs: Number.isFinite(errorAge) ? errorAge : null, ...diagnosticState() });
 
     // 성공·실패 여부와 관계없이 종료된 생성 상태는 반드시 닫는다.
     // 실패로 확정된 경우에만 재시도 종류(전송/스와이프)를 보존한다.
-    clearMainGenerationState({ preserveLastType: failed });
+    clearMainGenerationState({ preserveLastType: failed, reason: "GENERATION_ENDED" });
 
     if (failed) {
         lastGenerationType = retryType;
@@ -628,6 +830,7 @@ function onGenerationEnded(type) {
 }
 
 function onGenerationStopped(type) {
+    diagnosticEvent("GENERATION_STOPPED 수신", arguments);
     // 우리가 유발한 정지 이벤트면 무시 (무한루프 방지)
     if (retryState.stoppingGeneration) return;
     if (type === "quiet") return;
@@ -653,11 +856,12 @@ function onGenerationStopped(type) {
         log("생성 중단 이벤트 — 오류 감지 상태이므로 종료 판단은 ENDED에 위임");
         return;
     }
-    clearMainGenerationState();
+    clearMainGenerationState({ reason: "GENERATION_STOPPED" });
     log("본채팅 생성 중단 → 재시도 없이 추적 상태 정리");
 }
 
 function onGenerationStarted(type, params, dryRun) {
+    diagnosticEvent("GENERATION_STARTED 수신", arguments);
     // 드라이런(토큰 계산·프롬프트 재계산용 가짜 생성)은 실제 생성이 아님.
     // ST는 GENERATION_STARTED의 세 번째 인자로 dryRun 여부를 넘겨준다.
     // 이걸 무시하면 재시도 대기 중에 드라이런이 끼어들 때마다
@@ -709,7 +913,7 @@ function trackButtonClicks() {
         if (retryState.active) {
             stopRetrying("사용자가 생성을 중단함");
         }
-        clearMainGenerationState();
+        clearMainGenerationState({ reason: "stop_button" });
     });
 
     // 전송 버튼 클릭 감지 (사용자가 직접 누른 경우만)
@@ -760,7 +964,7 @@ function addSettingsUI() {
     <div class="die429-settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>429die</b>
+                <b>429die <small>v${VERSION}</small></b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
@@ -794,6 +998,7 @@ function addSettingsUI() {
                     <input id="die429_logbtn" type="button" class="menu_button" value="로그 보기">
                 </div>
                 <div id="die429_logwrap" style="display:none;">
+                    <small>진단 로그: 최근 1,000줄·약 350,000자 이내. 같은 탭 새로고침 후에도 유지됩니다(탭을 닫으면 삭제될 수 있음). API 키·대화 본문은 기록하지 않습니다. 시간은 UTC로 표시됩니다.</small>
                     <textarea id="die429_logview" class="text_pole" rows="10" readonly
                         style="font-size:11px; font-family:monospace; white-space:pre; overflow:auto;"></textarea>
                     <div class="die429-preview-wrap" style="margin-top:6px;">
@@ -809,7 +1014,7 @@ function addSettingsUI() {
     $("#extensions_settings").append(html);
 
     function renderLogView() {
-        const text = logBuffer.length ? logBuffer.join("\n") : "(아직 기록된 로그가 없습니다)";
+        const text = diagnosticReport();
         const $view = $("#die429_logview");
         $view.val(text);
         // 항상 맨 아래(최신 로그)로 스크롤
@@ -829,11 +1034,14 @@ function addSettingsUI() {
 
     $("#die429_logclear").on("click", function () {
         logBuffer.length = 0;
+        logChars = 0;
+        persistLogs();
         renderLogView();
     });
 
     $("#die429_logcopy").on("click", function () {
-        const text = logBuffer.join("\n");
+        const text = diagnosticReport();
+        $("#die429_logview").val(text);
         const done = () => toastr.success("로그가 클립보드에 복사되었습니다.", "429die");
         const fail = () => {
             // 클립보드 API 실패 시 textarea 선택 방식으로 대체
@@ -913,6 +1121,8 @@ function runBackgroundErrorTest() {
         activeMainGenerationSerial,
         pendingErrorGenerationSerial,
         pendingErrorAt,
+        generationStartedAt,
+        lastClosedGeneration,
     };
 
     try {
@@ -945,6 +1155,8 @@ function runBackgroundErrorTest() {
         activeMainGenerationSerial = snapshot.activeMainGenerationSerial;
         pendingErrorGenerationSerial = snapshot.pendingErrorGenerationSerial;
         pendingErrorAt = snapshot.pendingErrorAt;
+        generationStartedAt = snapshot.generationStartedAt;
+        lastClosedGeneration = snapshot.lastClosedGeneration;
     }
 }
 
@@ -995,11 +1207,19 @@ function registerSlashCommands() {
 }
 
 jQuery(async () => {
+    restoreLogs();
     settings = loadSettings();
     hookToastr();
+    hookDiagnosticFetch();
+    window.addEventListener("pagehide", persistLogs);
+    document.addEventListener("visibilitychange", () => {
+        diagnosticEvent("페이지 표시 상태 변경", [document.visibilityState === "visible"], false);
+        if (document.visibilityState === "hidden") persistLogs();
+    });
     bindEvents();
     trackButtonClicks();
     addSettingsUI();
     registerSlashCommands();
-    log("확장 로드 완료");
+    log(`확장 로드 완료 v${VERSION} — 진단 세션 ${diagnosticSession}`);
+    diagnosticEvent("초기 상태", [], false);
 });
