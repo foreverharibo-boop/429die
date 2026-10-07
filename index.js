@@ -975,7 +975,7 @@ function addSettingsUI() {
     <div class="die429-settings">
         <div class="inline-drawer">
             <div class="inline-drawer-toggle inline-drawer-header">
-                <b>429die <small>v${VERSION}</small></b>
+                <b>429die</b>
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
