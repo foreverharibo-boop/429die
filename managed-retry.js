@@ -1,7 +1,7 @@
 // Explicit opt-in stages only. Never infer ownership from a global toast or fetch.
 export function createManagedRetry({ getSettings, classify, log = () => {}, changed = () => {},
     setTimer = setTimeout, clearTimer = clearTimeout }) {
-    const stages = new Set(['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 재검수']);
+    const stages = new Set(['메인 AI 초안 생성', '메인 AI 재작성', 'JEV 초안 검수', 'JEV 답변 검수', 'JEV 재검수']);
     const tasks = new Map();
     let serial = 0;
     const notify = () => { try { changed(); } catch { /* UI is optional. */ } };
@@ -44,7 +44,7 @@ export function createManagedRetry({ getSettings, classify, log = () => {}, chan
         cancelAll: () => { for (const task of tasks.values()) cancel(task); },
         async run({ owner, stage, action, signal, validate, onCancel }) {
             if (owner !== '100LOG' || !stages.has(stage) || typeof action !== 'function') throw new TypeError('지원하지 않는 재시도 작업입니다.');
-            const task = { id: ++serial, stage, signal, validate, onCancel, controller: new AbortController(), count: 0, waiting: false };
+            const task = { id: ++serial, stage: stage === 'JEV 초안 검수' ? 'JEV 답변 검수' : stage, signal, validate, onCancel, controller: new AbortController(), count: 0, waiting: false };
             const stopped = () => cancel(task);
             signal?.addEventListener('abort', stopped, { once: true });
             tasks.set(task.id, task);

@@ -1,9 +1,9 @@
 import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced, eventSource, event_types } from "../../../../script.js";
-import { createManagedRetry, classifyManagedError } from "./managed-retry.js?v=1.9.11";
+import { createManagedRetry, classifyManagedError } from "./managed-retry.js?v=1.9.12";
 
 const EXT_ID = "429die";
-const VERSION = "1.9.11";
+const VERSION = "1.9.12";
 let managedRetry = null;
 
 // 켜고 끄는 것 외에는 UI로 노출하지 않는 고정값
@@ -995,7 +995,7 @@ function addSettingsUI() {
                 <label>최대 시도 횟수 (0 = 무제한)
                     <input id="die429_max" type="number" min="0" value="${settings.maxRetries}" class="text_pole">
                 </label>
-                <small>100LOG v1.9.25 이상과 함께 사용하면 숨은 초안·재작성·JEV 검수도 이 설정으로 재시도합니다. 실패한 단계만 다시 실행하며 기억 수집·번역은 제외합니다.</small>
+                <small>100LOG v1.9.26 이상과 함께 사용하면 받은 답변의 JEV 검수·재작성도 이 설정으로 재시도합니다. 실패한 단계만 다시 실행하며 기억 수집·번역은 제외합니다.</small>
                 <label class="checkbox_label">
                     <input id="die429_badge" type="checkbox" ${settings.showBadge ? "checked" : ""}>
                     <span>재시도 중 화면에 표시 (429 배지)</span>
