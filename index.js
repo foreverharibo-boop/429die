@@ -1,8 +1,10 @@
 import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced, eventSource, event_types } from "../../../../script.js";
+import { createManagedRetry, classifyManagedError } from "./managed-retry.js?v=1.9.11";
 
 const EXT_ID = "429die";
-const VERSION = "1.9.10";
+const VERSION = "1.9.11";
+let managedRetry = null;
 
 // 켜고 끄는 것 외에는 UI로 노출하지 않는 고정값
 const CONFIG = {
@@ -419,15 +421,16 @@ function applyBadgeStyle($ind) {
 
 function updateIndicator() {
     let $ind = $("#die429_indicator");
-    if (!retryState.active || !settings.showBadge) {
+    const managed = managedRetry?.getStatus().at(-1);
+    if ((!retryState.active && !managed) || !settings.showBadge) {
         $ind.remove();
         return;
     }
     const typeText = lastGenerationType === "swipe" ? "스와이프" : "전송";
-    const countText = settings.maxRetries > 0
-        ? `${retryState.count}/${settings.maxRetries}`
-        : `${retryState.count}회`;
-    const text = `🔄 ${typeText} 재시도 중... (${countText})  ✕`;
+    const count = managed?.count ?? retryState.count;
+    const countText = settings.maxRetries > 0 ? `${count}/${settings.maxRetries}` : `${count}회`;
+    const text = managed ? `🔄 100LOG ${managed.stage} ${managed.waiting ? '재시도 대기' : '재시도 중'} (${countText})  ✕`
+        : `🔄 ${typeText} 재시도 중... (${countText})  ✕`;
     if ($ind.length === 0) {
         $ind = $(`<div id="die429_indicator"></div>`);
         const parent = getBadgeParent();
@@ -441,6 +444,7 @@ function updateIndicator() {
         parent.appendChild($ind[0]);
     }
     $ind.text(text);
+    $ind.attr('data-managed', managed ? 'true' : 'false');
     applyBadgeStyle($ind);
 }
 
@@ -751,6 +755,10 @@ function hookToastr() {
             const combined = `${title || ""} ${message || ""}`;
             const matched = settings.enabled && matchesPattern(combined);
             log("[진단] 오류 토스트", { matched, ...diagnosticErrorInfo(combined), ...diagnosticState(), sources: diagnosticSources() });
+            if (managedRetry?.hasActive()) {
+                log("100LOG 연동 작업 진행 중 → 토스트로 재전송하지 않고 해당 작업의 실패 결과로 판단");
+                return originalError(message, title, options);
+            }
             if (matched) {
                 log("오류 패턴 감지:", diagnosticErrorInfo(combined));
                 // 즉시 재시도하지 않는다. 이 오류가 본 채팅 생성에서 난 건지,
@@ -870,6 +878,7 @@ function onGenerationStarted(type, params, dryRun) {
         log(`드라이런 생성 감지(type=${type}) → 무시`);
         return;
     }
+    if (type !== "quiet" && managedRetry?.hasActive()) managedRetry.cancelAll();
     // 이 생성이 방금 우리가 시작한 재시도라면 사용자 액션으로 취급하지 않는다.
     // programmaticClick 가드보다 먼저 소비해야, 빨리 도착하든(800ms 이내)
     // QR 큐잉·슬래시 커맨드 지연으로 늦게 도착하든 마커가 항상 정리된다.
@@ -901,6 +910,7 @@ function trackButtonClicks() {
     $(document).on("click pointerdown", "#die429_indicator", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (e.currentTarget?.dataset?.managed === 'true' || managedRetry?.hasActive()) { managedRetry?.cancelAll(); return; }
         stopRetrying("사용자가 클릭하여 중단함", { stopGeneration: true });
     });
 
@@ -910,6 +920,7 @@ function trackButtonClicks() {
     $(document).on("click", "#mes_stop", (e) => {
         if (retryState.programmaticClick) return;      // 우리가 누른 정지는 무시
         if (!e.originalEvent) return;                   // 코드가 만든 가짜 클릭은 무시
+        managedRetry?.cancelAll();
         if (retryState.active) {
             stopRetrying("사용자가 생성을 중단함");
         }
@@ -984,6 +995,7 @@ function addSettingsUI() {
                 <label>최대 시도 횟수 (0 = 무제한)
                     <input id="die429_max" type="number" min="0" value="${settings.maxRetries}" class="text_pole">
                 </label>
+                <small>100LOG v1.9.25 이상과 함께 사용하면 숨은 초안·재작성·JEV 검수도 이 설정으로 재시도합니다. 실패한 단계만 다시 실행하며 기억 수집·번역은 제외합니다.</small>
                 <label class="checkbox_label">
                     <input id="die429_badge" type="checkbox" ${settings.showBadge ? "checked" : ""}>
                     <span>재시도 중 화면에 표시 (429 배지)</span>
@@ -1077,6 +1089,7 @@ function addSettingsUI() {
 
     $("#die429_enabled").on("change", function () {
         settings.enabled = $(this).is(":checked");
+        if (!settings.enabled) managedRetry?.cancelAll();
         if (!settings.enabled) stopRetrying("비활성화됨", { stopGeneration: true });
         saveSettingsDebounced();
     });
@@ -1209,6 +1222,9 @@ function registerSlashCommands() {
 jQuery(async () => {
     restoreLogs();
     settings = loadSettings();
+    managedRetry = createManagedRetry({ getSettings: () => settings, classify: classifyManagedError,
+        log: (event, details) => log(`[연동] ${event}`, details), changed: updateIndicator });
+    globalThis.die429Retry = managedRetry;
     hookToastr();
     hookDiagnosticFetch();
     window.addEventListener("pagehide", persistLogs);
