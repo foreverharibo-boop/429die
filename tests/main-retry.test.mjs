@@ -27,6 +27,7 @@ class Events {
 function fixture({ beforeBind, catchMode = 'safe' } = {}) {
     let now = 100000, timerId = 0;
     const timers = new Map(), commands = [];
+    const context = { characters: [{ avatar: 'Char.png' }], characterId: 0, chatId: 'Chat A', groupId: null };
     const events = new Events();
     beforeBind?.(events);
     const sandbox = {
@@ -39,13 +40,14 @@ function fixture({ beforeBind, catchMode = 'safe' } = {}) {
         $() { return { remove() {} }; },
         toastr: { error() {} }, eventSource: events,
         event_types: Object.fromEntries(eventNames.map(x => [x, x])),
-        window: { SillyTavern: { getContext() { return { executeSlashCommandsWithOptions(cmd) { commands.push(cmd); } }; } } },
+        window: { SillyTavern: { getContext() { return { ...context, executeSlashCommandsWithOptions(cmd) { commands.push(cmd); } }; } } },
     };
     vm.createContext(sandbox);
     vm.runInContext(source + `
         settings = { enabled: true, catchMode: ${JSON.stringify(catchMode)}, maxRetries: 20, showBadge: false, showPopup: false };
         hookToastr(); bindEvents();
         globalThis.subject = {
+            bridge: createMainReplyBridge(),
             state: () => ({ active: retryState.active, count: retryState.count, inFlight: mainGenInFlight,
                 pending: pendingError, endPending: generationEndTimer !== null,
                 serial: activeMainGenerationSerial, retrySerial: retryState.generationSerial }),
@@ -69,7 +71,7 @@ function fixture({ beforeBind, catchMode = 'safe' } = {}) {
         now = target;
     };
     return {
-        ...sandbox.subject, events, commands, timers, advance,
+        ...sandbox.subject, events, commands, timers, advance, context,
         start: (type = 'normal', dryRun = false) => events.emit('GENERATION_STARTED', type, {}, dryRun),
         // ST passes chat.length, not the generation type, to GENERATION_ENDED.
         end: () => events.emit('GENERATION_ENDED', 12),
@@ -199,4 +201,61 @@ test('idle background errors and existing background self-test do not arm retrie
     assert.equal(h.state().active, false);
     assert.equal(h.backgroundTest().ok, true);
     await h.advance(5000); assert.equal(h.commands.length, 0);
+});
+
+test('Relay receipt cancels only its queued/deferred retry without replaying message hooks', async () => {
+    for (const settle of [false, true]) {
+        const h = fixture(); let received = 0;
+        h.events.on('MESSAGE_RECEIVED', () => received++);
+        await h.start(); const receipt = h.bridge.capture({ avatar: 'Char.png', file: 'Chat A' });
+        h.error(); await h.end(); if (settle) await h.advance(0);
+        assert.equal(receipt.received(), true);
+        assert.equal(receipt.received(), false);
+        await h.advance(5000);
+        assert.equal(h.commands.length, 0); assert.equal(received, 0);
+        assert.equal(h.state().active, false); assert.equal(h.state().endPending, false);
+    }
+});
+
+test('Relay cannot bind idle work, a wrong chat, or a chat switched since generation start', async () => {
+    const h = fixture(); const identity = { avatar: 'Char.png', file: 'Chat A' };
+    assert.equal(h.bridge.capture(identity), null);
+    await h.start();
+    assert.equal(h.bridge.capture({ ...identity, file: 'Other' }), null);
+    h.context.chatId = 'Other';
+    assert.equal(h.bridge.capture({ ...identity, file: 'Other' }), null);
+});
+
+test('old Relay receipts do not cancel a newer manual generation or automatic attempt', async () => {
+    for (const automatic of [false, true]) {
+        const h = fixture(); await h.start();
+        const receipt = h.bridge.capture({ avatar: 'Char.png', file: 'Chat A' });
+        h.error(); await h.end(); await h.advance(0);
+        if (automatic) { await h.advance(3000); await h.start(); }
+        else await h.start();
+        h.error(); await h.end(); await h.advance(0);
+        assert.equal(receipt.received(), false);
+        assert.equal(h.state().active, true);
+    }
+});
+
+test('Relay receipt refuses a different current chat and a manually stopped generation', async () => {
+    for (const switched of [false, true]) {
+        const h = fixture(); await h.start();
+        const receipt = h.bridge.capture({ avatar: 'Char.png', file: 'Chat A' });
+        h.error(); await h.end(); await h.advance(0);
+        if (switched) h.context.chatId = 'Other'; else h.stop();
+        assert.equal(receipt.received(), false);
+        assert.equal(h.state().active, switched);
+    }
+});
+
+test('Relay recovery acknowledgement never cancels managed 100LOG work', async () => {
+    const h = fixture(); await h.start();
+    const receipt = h.bridge.capture({ avatar: 'Char.png', file: 'Chat A' });
+    h.error(); await h.end(); await h.advance(0);
+    let cancelled = 0;
+    h.managed({ hasActive: () => true, getStatus: () => [], cancelAll: () => cancelled++ });
+    assert.equal(receipt.received(), true);
+    assert.equal(cancelled, 0); assert.equal(h.state().active, false);
 });

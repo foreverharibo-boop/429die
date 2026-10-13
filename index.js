@@ -1,9 +1,9 @@
 import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced, eventSource, event_types } from "../../../../script.js";
-import { createManagedRetry, classifyManagedError } from "./managed-retry.js?v=1.9.13";
+import { createManagedRetry, classifyManagedError } from "./managed-retry.js?v=1.9.14";
 
 const EXT_ID = "429die";
-const VERSION = "1.9.13";
+const VERSION = "1.9.14";
 let managedRetry = null;
 
 // 켜고 끄는 것 외에는 UI로 노출하지 않는 고정값
@@ -105,6 +105,7 @@ let pendingErrorGenerationSerial = null;
 let pendingErrorAt = 0;
 let generationEndTimer = null;
 let lastReceivedGenerationSerial = null;
+let mainGenerationIdentity = null;
 let retryState = {
     active: false,
     count: 0,
@@ -513,12 +514,56 @@ function beginMainGeneration(type) {
     clearGenerationEndTimer();
     mainGenerationSerial += 1;
     activeMainGenerationSerial = mainGenerationSerial;
+    mainGenerationIdentity = currentMainChatIdentity();
     lastGenerationType = type === "swipe" ? "swipe" : "normal";
     mainGenInFlight = true;
     gotMessageThisGen = false;
     clearPendingErrorState();
     generationStartedAt = Date.now();
     diagnosticEvent("본채팅 추적 시작", [type]);
+}
+
+function currentMainChatIdentity() {
+    try {
+        const ctx = window.SillyTavern?.getContext?.();
+        const avatar = ctx?.characters?.[ctx.characterId]?.avatar;
+        if (!ctx || ctx.groupId || !avatar || !ctx.chatId) return null;
+        return { avatar, file: ctx.chatId };
+    } catch { return null; }
+}
+
+function sameMainChat(a, b) {
+    return !!a && !!b && a.avatar === b.avatar && a.file === b.file;
+}
+
+// Optional, in-memory receipt for one explicitly identified Relay request.
+// Capture before its asynchronous submission, never at recovery time. A receipt
+// cannot cancel another generation, another chat, or managed 100LOG work.
+function createMainReplyBridge() {
+    return Object.freeze({
+        apiVersion: 1,
+        capture(identity) {
+            if (!settings?.enabled || !mainGenInFlight || activeMainGenerationSerial === null
+                || !sameMainChat(identity, mainGenerationIdentity)
+                || !sameMainChat(identity, currentMainChatIdentity())) return null;
+            const generationSerial = activeMainGenerationSerial;
+            const capturedIdentity = { avatar: identity.avatar, file: identity.file };
+            let consumed = false;
+            return Object.freeze({
+                received() {
+                    if (consumed) return false;
+                    consumed = true;
+                    const trackedSerial = activeMainGenerationSerial ?? retryState.generationSerial;
+                    if (!settings?.enabled || retryState.manuallyStopped
+                        || generationSerial !== mainGenerationSerial || trackedSerial !== generationSerial
+                        || !sameMainChat(capturedIdentity, currentMainChatIdentity())) return false;
+                    log("릴레이가 해당 답변 복구 확인 → 본문 재시도 취소", { generation: generationSerial });
+                    acknowledgeMainReply(generationSerial, "SILLY_RELAY_REPLY_RECEIVED");
+                    return true;
+                },
+            });
+        },
+    });
 }
 
 function clearGenerationEndTimer() {
@@ -539,6 +584,7 @@ function clearMainGenerationState({ preserveLastType = false, reason = "unspecif
     generationStartedAt = 0;
     mainGenInFlight = false;
     activeMainGenerationSerial = null;
+    mainGenerationIdentity = null;
     gotMessageThisGen = false;
     clearPendingErrorState();
     if (!preserveLastType) {
@@ -808,6 +854,10 @@ function hookToastr() {
 function onMessageReceived() {
     diagnosticEvent("MESSAGE_RECEIVED 수신", arguments);
     const generationSerial = activeMainGenerationSerial ?? retryState.generationSerial;
+    acknowledgeMainReply(generationSerial, "MESSAGE_RECEIVED");
+}
+
+function acknowledgeMainReply(generationSerial, reason) {
     if (generationSerial !== null) lastReceivedGenerationSerial = generationSerial;
     // 정상 응답을 받았음 → 이번 생성은 성공. 대기 중이던 오류(백그라운드 오류)는 무효화.
     gotMessageThisGen = true;
@@ -819,7 +869,7 @@ function onMessageReceived() {
         resetRetryState();
     }
     // 성공했으니 다음 오류에 오작동하지 않도록 본채팅 생성 상태 전체 초기화
-    clearMainGenerationState({ reason: "MESSAGE_RECEIVED" });
+    clearMainGenerationState({ reason });
 }
 
 function onGenerationEnded(type) {
@@ -1181,6 +1231,7 @@ function runBackgroundErrorTest() {
         pendingErrorAt,
         generationStartedAt,
         lastClosedGeneration,
+        mainGenerationIdentity,
     };
 
     try {
@@ -1215,6 +1266,7 @@ function runBackgroundErrorTest() {
         pendingErrorAt = snapshot.pendingErrorAt;
         generationStartedAt = snapshot.generationStartedAt;
         lastClosedGeneration = snapshot.lastClosedGeneration;
+        mainGenerationIdentity = snapshot.mainGenerationIdentity;
     }
 }
 
@@ -1270,6 +1322,7 @@ jQuery(async () => {
     managedRetry = createManagedRetry({ getSettings: () => settings, classify: classifyManagedError,
         log: (event, details) => log(`[연동] ${event}`, details), changed: updateIndicator });
     globalThis.die429Retry = managedRetry;
+    globalThis.die429MainReply = createMainReplyBridge();
     hookToastr();
     hookDiagnosticFetch();
     window.addEventListener("pagehide", persistLogs);
