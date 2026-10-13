@@ -1,9 +1,9 @@
 import { extension_settings } from "../../../extensions.js";
 import { saveSettingsDebounced, eventSource, event_types } from "../../../../script.js";
-import { createManagedRetry, classifyManagedError } from "./managed-retry.js?v=1.9.12";
+import { createManagedRetry, classifyManagedError } from "./managed-retry.js?v=1.9.13";
 
 const EXT_ID = "429die";
-const VERSION = "1.9.12";
+const VERSION = "1.9.13";
 let managedRetry = null;
 
 // 켜고 끄는 것 외에는 UI로 노출하지 않는 고정값
@@ -103,10 +103,13 @@ let mainGenerationSerial = 0; // 실제 본채팅 생성 회차 식별자
 let activeMainGenerationSerial = null;
 let pendingErrorGenerationSerial = null;
 let pendingErrorAt = 0;
+let generationEndTimer = null;
+let lastReceivedGenerationSerial = null;
 let retryState = {
     active: false,
     count: 0,
     timer: null,
+    generationSerial: null, // The failed generation that owns the queued retry.
     programmaticClick: false,
     suppressUntil: 0,
     manuallyStopped: false,
@@ -207,6 +210,9 @@ function diagnosticState() {
         } : null,
         retryActive: retryState.active,
         retryCount: retryState.count,
+        retryGeneration: retryState.generationSerial,
+        lastReceivedGeneration: lastReceivedGenerationSerial,
+        endDecisionPending: generationEndTimer !== null,
         manuallyStopped: retryState.manuallyStopped,
         stoppingGeneration: retryState.stoppingGeneration,
         programmaticClick: retryState.programmaticClick,
@@ -479,6 +485,7 @@ function showDemoBadge() {
 function resetRetryState() {
     retryState.active = false;
     retryState.count = 0;
+    retryState.generationSerial = null;
     lastGenerationType = null;
     if (retryState.timer) {
         clearTimeout(retryState.timer);
@@ -503,6 +510,7 @@ function clearPendingErrorState() {
 }
 
 function beginMainGeneration(type) {
+    clearGenerationEndTimer();
     mainGenerationSerial += 1;
     activeMainGenerationSerial = mainGenerationSerial;
     lastGenerationType = type === "swipe" ? "swipe" : "normal";
@@ -513,7 +521,13 @@ function beginMainGeneration(type) {
     diagnosticEvent("본채팅 추적 시작", [type]);
 }
 
+function clearGenerationEndTimer() {
+    if (generationEndTimer !== null) clearTimeout(generationEndTimer);
+    generationEndTimer = null;
+}
+
 function clearMainGenerationState({ preserveLastType = false, reason = "unspecified" } = {}) {
+    clearGenerationEndTimer();
     diagnosticEvent(`추적 정리 직전: ${reason}`);
     if (activeMainGenerationSerial !== null) {
         lastClosedGeneration = {
@@ -582,9 +596,10 @@ function stopRetrying(reason, { stopGeneration = false } = {}) {
     resetRetryState();
 }
 
-function scheduleRetry() {
+function scheduleRetry(generationSerial) {
     diagnosticEvent("재시도 예약 판단", [], false);
     if (!settings.enabled) return;
+    if (generationSerial == null || generationSerial === lastReceivedGenerationSerial) return;
     if (retryState.manuallyStopped) {
         log("사용자가 중단함, 새 액션 전까지 재시도 안 함");
         return;
@@ -607,6 +622,7 @@ function scheduleRetry() {
 
     retryState.active = true;
     retryState.count += 1;
+    retryState.generationSerial = generationSerial;
 
     let delay = CONFIG.retryDelay;
     if (CONFIG.backoffMultiplier > 1.0) {
@@ -619,12 +635,18 @@ function scheduleRetry() {
     updateIndicator();
     log(`재시도 #${retryState.count} 예약됨, ${delay}ms 후 실행`);
 
-    retryState.timer = setTimeout(() => retryLastAction(), delay);
+    retryState.timer = setTimeout(() => retryLastAction(generationSerial), delay);
 }
 
-function retryLastAction() {
+function retryLastAction(generationSerial = retryState.generationSerial) {
     diagnosticEvent("재시도 실행 판단", [], false);
     if (!retryState.active) return;
+    // A cancelled/stale callback must not act on a newer retry or a received reply.
+    if (generationSerial == null || generationSerial !== retryState.generationSerial) return;
+    if (!settings.enabled || generationSerial === lastReceivedGenerationSerial) {
+        resetRetryState();
+        return;
+    }
 
     // 우리가 시작하는 재시도 생성은 programmaticClick 때문에 onGenerationStarted에서
     // mainGenInFlight가 안 켜지므로, 여기서 직접 켜준다 (재시도 생성의 실패도 감지하기 위함).
@@ -736,7 +758,8 @@ function fallbackSendClick() {
     }
 
     if ($sendBtn.is(":hidden") || $sendBtn.hasClass("displayNone")) {
-        retryState.timer = setTimeout(retryLastAction, 500);
+        const generationSerial = retryState.generationSerial;
+        retryState.timer = setTimeout(() => retryLastAction(generationSerial), 500);
         return;
     }
 
@@ -784,6 +807,8 @@ function hookToastr() {
 
 function onMessageReceived() {
     diagnosticEvent("MESSAGE_RECEIVED 수신", arguments);
+    const generationSerial = activeMainGenerationSerial ?? retryState.generationSerial;
+    if (generationSerial !== null) lastReceivedGenerationSerial = generationSerial;
     // 정상 응답을 받았음 → 이번 생성은 성공. 대기 중이던 오류(백그라운드 오류)는 무효화.
     gotMessageThisGen = true;
     clearPendingErrorState();
@@ -822,15 +847,28 @@ function onGenerationEnded(type) {
     const retryType = lastGenerationType;
     log("[진단] 종료 판정", { failed, errorBelongsToThisGeneration, errorAgeMs: Number.isFinite(errorAge) ? errorAge : null, ...diagnosticState() });
 
-    // 성공·실패 여부와 관계없이 종료된 생성 상태는 반드시 닫는다.
-    // 실패로 확정된 경우에만 재시도 종류(전송/스와이프)를 보존한다.
-    clearMainGenerationState({ preserveLastType: failed, reason: "GENERATION_ENDED" });
-
     if (failed) {
-        lastGenerationType = retryType;
-        log("본 채팅 생성이 정상 응답 없이 종료됨 + 오류 대기 → 재시도");
-        scheduleRetry();
-    } else if (wasPending) {
+        // ST streaming can emit ENDED before MESSAGE_RECEIVED in the same turn.
+        // Let that turn (including its microtasks) finish before deciding. This
+        // is not a longer retry delay and does not wait for translation/review.
+        if (generationEndTimer !== null) return;
+        const generationSerial = activeMainGenerationSerial;
+        log("종료 후 답변 수신 신호 확인 대기", { generation: generationSerial });
+        generationEndTimer = setTimeout(() => {
+            // A new generation or a received reply invalidates this decision.
+            if (activeMainGenerationSerial !== generationSerial || !mainGenInFlight) return;
+            generationEndTimer = null;
+            if (lastReceivedGenerationSerial === generationSerial || gotMessageThisGen) return;
+            clearMainGenerationState({ preserveLastType: true, reason: "GENERATION_ENDED_SETTLED" });
+            lastGenerationType = retryType;
+            log("본 채팅 생성이 정상 응답 없이 종료됨 + 오류 대기 → 재시도");
+            scheduleRetry(generationSerial);
+        }, 0);
+        return;
+    }
+
+    clearMainGenerationState({ reason: "GENERATION_ENDED" });
+    if (wasPending) {
         log("오류와 종료가 같은 본채팅 생성으로 확인되지 않음 → 재시도 안 함");
     } else {
         log("본채팅 생성 종료 → 추적 상태 정리");
@@ -957,7 +995,14 @@ function bindEvents() {
         log("eventSource를 찾을 수 없어 이벤트 바인딩 생략");
         return;
     }
-    eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+    // A slow earlier MESSAGE_RECEIVED listener (translation/review/etc.) used
+    // to delay success acknowledgement beyond our retry timer. Acknowledge
+    // synchronously before those listeners; never await their work here.
+    if (typeof eventSource.makeFirst === "function") {
+        eventSource.makeFirst(event_types.MESSAGE_RECEIVED, onMessageReceived);
+    } else {
+        eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+    }
     if (event_types.GENERATION_ENDED) {
         eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
     }
@@ -1239,3 +1284,4 @@ jQuery(async () => {
     log(`확장 로드 완료 v${VERSION} — 진단 세션 ${diagnosticSession}`);
     diagnosticEvent("초기 상태", [], false);
 });
+
